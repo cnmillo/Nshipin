@@ -3,7 +3,7 @@
     <!-- Header -->
     <header class="header">
       <div class="header-left">
-        <button class="brand" @click="navigateTo('/')">
+        <button class="brand" @click="useRouter().push('/')">
           <div class="brand-mark">
             <img v-if="showBrandImage" :src="brandLogo" alt="火宝短剧" class="brand-logo" @error="showBrandImage = false" />
             <span v-else class="brand-fallback">火</span>

@@ -28,7 +28,7 @@
         :key="d.id"
         class="card project-card"
         :style="{ animationDelay: `${i * 0.06}s` }"
-        @click="navigateTo(`/drama/${d.id}`)"
+        @click="router.push(`/drama/${d.id}`)"
       >
         <!-- Card film strip decoration -->
         <div class="card-film-strip">
@@ -141,6 +141,7 @@ import BaseSelect from '~/components/BaseSelect.vue'
 
 const dramas = ref([])
 const loading = ref(false)
+const router = useRouter()
 const showCreate = ref(false)
 const form = ref({ title: '', total_episodes: 1, style: '' })
 const styles = ['realistic', 'anime', 'ghibli', 'cinematic', 'comic', 'watercolor']
@@ -172,7 +173,7 @@ async function create() {
   try {
     const d = await dramaAPI.create(form.value)
     showCreate.value = false
-    navigateTo(`/drama/${d.id}`)
+    router.push(`/drama/${d.id}`)
   } catch (e) {
     toast.error(e.message)
   }

@@ -3,7 +3,7 @@
     <!-- Header -->
     <div class="page-head">
       <div class="head-left">
-        <button class="back-btn" @click="navigateTo('/')">
+        <button class="back-btn" @click="router.push('/')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
           </svg>
@@ -60,7 +60,7 @@
         :key="ep.id"
         class="card ep-card"
         :style="{ animationDelay: `${i * 0.05}s` }"
-        @click="navigateTo(`/drama/${drama.id}/episode/${ep.episode_number || ep.episodeNumber}`)"
+        @click="goEpisode(ep)"
       >
         <div class="ep-number">E{{ String(ep.episode_number || ep.episodeNumber).padStart(2, '0') }}</div>
         <div class="ep-body">
@@ -185,6 +185,7 @@ import { toast } from 'vue-sonner'
 import { aiConfigAPI, dramaAPI, episodeAPI } from '~/composables/useApi'
 
 const route = useRoute()
+const router = useRouter()
 const drama = ref(null)
 const dramaId = Number(route.params.id)
 const addDialog = ref(false)
@@ -202,6 +203,11 @@ const styleOptions = Object.entries(styleLabels).map(([value, label]) => ({ labe
 const selectedStyle = ref('')
 
 function hasScript(ep) { return !!(ep.script_content || ep.scriptContent) }
+
+function goEpisode(ep) {
+  const num = ep.episode_number || ep.episodeNumber
+  router.push(`/drama/${dramaId}/episode/${num}`)
+}
 
 function configLabel(config) {
   if (!config) return ''
