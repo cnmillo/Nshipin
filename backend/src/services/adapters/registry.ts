@@ -17,6 +17,7 @@ import { SiliconFlowImageAdapter } from './siliconflow-image'
 import { ZhipuVideoAdapter } from './zhipu-video'
 import { AliVideoAdapter } from './ali-video'
 import { EdgeTTSAdapter } from './edge-tts'
+import { CosyVoiceTTSAdapter } from './cosyvoice-tts'
 import type { ImageProviderAdapter, VideoProviderAdapter, TTSProviderAdapter } from './types'
 
 // 图片 Adapter 注册表
@@ -46,6 +47,7 @@ export const ttsAdapters: Record<string, TTSProviderAdapter> = {
   minimax: new MiniMaxTTSAdapter(),
   openai: new OpenAITTSAdapter(),
   'edge-tts': new EdgeTTSAdapter(),
+  cosyvoice: new CosyVoiceTTSAdapter(),
 }
 
 export function getTTSAdapter(provider: string): TTSProviderAdapter {

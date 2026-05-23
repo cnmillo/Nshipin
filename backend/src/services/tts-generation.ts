@@ -17,6 +17,10 @@ function isEdgeTTSVoice(voice: string): boolean {
   return voice.match(/^zh-/) !== null
 }
 
+function isCosyVoiceVoice(voice: string): boolean {
+  return voice.startsWith('sft:') || voice.startsWith('zero_shot:') || voice.startsWith('cross_lingual:') || voice.startsWith('instruct:')
+}
+
 const VOICE_TO_EDGE: Record<string, string> = {
   alloy: 'zh-CN-XiaoxiaoNeural',
   echo: 'zh-CN-YunjianNeural',
@@ -90,6 +94,20 @@ export async function generateTTS(params: TTSParams): Promise<string> {
     }
   }
 
+  if (params.voiceProvider === 'cosyvoice' || isCosyVoiceVoice(params.voice)) {
+    const cosyConfig = getActiveConfig('audio')
+    if (cosyConfig && cosyConfig.provider === 'cosyvoice') {
+      config = cosyConfig
+    } else {
+      config = {
+        provider: 'cosyvoice',
+        baseUrl: process.env.COSYVOICE_URL || 'http://cosyvoice:50000',
+        apiKey: '',
+        model: '',
+      }
+    }
+  }
+
   // 当配置是 Edge TTS 但音色无效时，自动替换为默认音色
   let effectiveVoice = params.voice
   if (config.provider === 'edge-tts' && !isEdgeTTSVoice(params.voice)) {
@@ -119,7 +137,11 @@ export async function generateTTS(params: TTSParams): Promise<string> {
 
   if (adapter.generateDirect) {
     logTaskProgress('AudioTask', 'generate-direct', { provider: config.provider, voice: effectiveVoice })
-    const result = await adapter.generateDirect({ ...params, voice: effectiveVoice })
+    const directParams: any = { ...params, voice: effectiveVoice }
+    if (config.provider === 'cosyvoice') {
+      directParams.config = config
+    }
+    const result = await adapter.generateDirect(directParams)
     buffer = result.buffer
     format = result.format || 'mp3'
   } else {

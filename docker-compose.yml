@@ -9,4 +9,47 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=5679
+      - COSYVOICE_URL=http://cosyvoice:50000
+    depends_on:
+      cosyvoice:
+        condition: service_healthy
+    restart: unless-stopped
+
+  cosyvoice:
+    image: rocm/pytorch:latest
+    ports:
+      - "50000:50000"
+    volumes:
+      - ./cosyvoice-models:/opt/CosyVoice/pretrained_models
+      - ./cosyvoice-server:/opt/CosyVoice/runtime/python/fastapi
+    working_dir: /opt/CosyVoice
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=10.3.0
+      - PYTORCH_ROCM_ARCH=gfx1030
+      - PYTHONUNBUFFERED=1
+    entrypoint: >
+      bash -c "
+        if [ ! -d /opt/CosyVoice/cosyvoice ]; then
+          apt-get update && apt-get install -y git sox libsox-dev &&
+          git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice &&
+          cd /opt/CosyVoice &&
+          pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+        fi &&
+        cd /opt/CosyVoice &&
+        export PYTHONPATH=/opt/CosyVoice/third_party/Matcha-TTS:$$PYTHONPATH &&
+        if [ ! -d pretrained_models/CosyVoice2-0.5B ]; then
+          pip install modelscope &&
+          python3 -c \"from modelscope import snapshot_download; snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B')\"
+        fi &&
+        python3 runtime/python/fastapi/server.py --port 50000 --model_dir pretrained_models/CosyVoice2-0.5B
+      "
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
     restart: unless-stopped

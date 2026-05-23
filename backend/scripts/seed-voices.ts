@@ -349,6 +349,29 @@ const edgeRows = edgeVoices.map(v => ({
   createdAt: ts,
 }))
 
-db.insert(schema.aiVoices).values([...minimaxRows, ...edgeRows]).run()
+const cosyvoiceVoices = [
+  { voice_id: "sft:中文女", voice_name: "中文女声（CosyVoice）", language: "中文（普通话）" },
+  { voice_id: "sft:中文男", voice_name: "中文男声（CosyVoice）", language: "中文（普通话）" },
+  { voice_id: "sft:日语男", voice_name: "日语男声（CosyVoice）", language: "日语" },
+  { voice_id: "sft:粤语女", voice_name: "粤语女声（CosyVoice）", language: "粤语" },
+  { voice_id: "sft:英文女", voice_name: "英文女声（CosyVoice）", language: "英语" },
+  { voice_id: "sft:英文男", voice_name: "英文男声（CosyVoice）", language: "英语" },
+  { voice_id: "sft:韩语女", voice_name: "韩语女声（CosyVoice）", language: "韩语" },
+  { voice_id: "instruct:中文女", voice_name: "中文女声-指令控制（CosyVoice）", language: "中文（普通话）" },
+  { voice_id: "instruct:中文男", voice_name: "中文男声-指令控制（CosyVoice）", language: "中文（普通话）" },
+  { voice_id: "zero_shot", voice_name: "零样本语音克隆（CosyVoice）", language: "多语言" },
+  { voice_id: "cross_lingual", voice_name: "跨语言语音克隆（CosyVoice）", language: "多语言" },
+]
 
-console.log(`✅ Inserted ${minimaxRows.length} minimax voices + ${edgeRows.length} edge-tts voices`)
+const cosyvoiceRows = cosyvoiceVoices.map(v => ({
+  voiceId: v.voice_id,
+  voiceName: v.voice_name,
+  description: '[]',
+  language: v.language,
+  provider: 'cosyvoice',
+  createdAt: ts,
+}))
+
+db.insert(schema.aiVoices).values([...minimaxRows, ...edgeRows, ...cosyvoiceRows]).run()
+
+console.log(`✅ Inserted ${minimaxRows.length} minimax + ${edgeRows.length} edge-tts + ${cosyvoiceRows.length} cosyvoice voices`)

@@ -1,8 +1,3 @@
-/**
- * AI 音色管理
- * GET  /api/v1/ai-voices       - 获取音色列表
- * POST /api/v1/ai-voices/sync  - 从 MiniMax 同步音色
- */
 import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
@@ -21,7 +16,6 @@ function safeJsonParse(value: any): any[] {
   }
 }
 
-// GET /ai-voices?provider=minimax
 app.get('/', async (c) => {
   const provider = c.req.query('provider') || 'minimax'
   const rows = db.select().from(schema.aiVoices)
@@ -39,9 +33,7 @@ app.get('/', async (c) => {
   return success(c, parsed)
 })
 
-// POST /ai-voices/sync
 app.post('/sync', async (c) => {
-  // 从数据库获取 minimax 的音频配置
   const rows = db.select().from(schema.aiServiceConfigs)
     .where(eq(schema.aiServiceConfigs.serviceType, 'audio'))
     .all()
@@ -56,7 +48,6 @@ app.post('/sync', async (c) => {
     return badRequest(c, 'MiniMax API key not configured')
   }
 
-  // 调用 MiniMax get_voice API
   const resp = await fetch(joinProviderUrl(config.baseUrl, '/v1', '/get_voice'), {
     method: 'POST',
     headers: {
@@ -78,10 +69,8 @@ app.post('/sync', async (c) => {
   const voices = (result.system_voice || []).filter((v: any) => shouldKeepVoice(v))
   const ts = now()
 
-  // 先清空旧数据
   db.delete(schema.aiVoices).where(eq(schema.aiVoices.provider, 'minimax')).run()
 
-  // 批量插入新数据
   const insertRows = voices.map((v: any) => ({
     voiceId: v.voice_id,
     voiceName: v.voice_name,
@@ -138,9 +127,48 @@ app.post('/sync-edge', async (c) => {
   }
 })
 
-/**
- * 从 voice_id 或 voice_name 推断语言
- */
+app.post('/sync-cosyvoice', async (c) => {
+  try {
+    const cosyvoiceUrl = process.env.COSYVOICE_URL || 'http://cosyvoice:50000'
+    const resp = await fetch(`${cosyvoiceUrl}/health`)
+    if (!resp.ok) return badRequest(c, `CosyVoice service not available: ${resp.status}`)
+
+    const spksResp = await fetch(`${cosyvoiceUrl}/list_spks`)
+    const spks = spksResp.ok ? await spksResp.json() as string[] : []
+    const ts = now()
+
+    db.delete(schema.aiVoices).where(eq(schema.aiVoices.provider, 'cosyvoice')).run()
+
+    const insertRows: any[] = []
+
+    for (const spk of spks) {
+      insertRows.push({
+        voiceId: `sft:${spk}`,
+        voiceName: `${spk}（CosyVoice SFT）`,
+        description: '[]',
+        language: extractCosyVoiceLanguage(spk),
+        provider: 'cosyvoice',
+        createdAt: ts,
+      })
+    }
+
+    insertRows.push(
+      { voiceId: 'instruct:中文女', voiceName: '中文女声-指令控制（CosyVoice）', description: '[]', language: '中文（普通话）', provider: 'cosyvoice', createdAt: ts },
+      { voiceId: 'instruct:中文男', voiceName: '中文男声-指令控制（CosyVoice）', description: '[]', language: '中文（普通话）', provider: 'cosyvoice', createdAt: ts },
+      { voiceId: 'zero_shot', voiceName: '零样本语音克隆（CosyVoice）', description: '[]', language: '多语言', provider: 'cosyvoice', createdAt: ts },
+      { voiceId: 'cross_lingual', voiceName: '跨语言语音克隆（CosyVoice）', description: '[]', language: '多语言', provider: 'cosyvoice', createdAt: ts },
+    )
+
+    if (insertRows.length > 0) {
+      db.insert(schema.aiVoices).values(insertRows).run()
+    }
+
+    return success(c, { count: insertRows.length, message: `Synced ${insertRows.length} cosyvoice voices` })
+  } catch (error: any) {
+    return badRequest(c, error.message || 'Failed to sync cosyvoice voices')
+  }
+})
+
 function extractLanguage(voiceId: string, voiceName: string): string {
   const text = `${voiceId} ${voiceName}`.toLowerCase()
   if (text.includes('cantonese') || text.includes('粤')) return '粤语'
@@ -173,6 +201,16 @@ function extractEdgeLanguage(locale: string): string {
   if (locale === 'zh-CN-sichuan') return '四川话'
   if (locale.startsWith('zh-')) return '中文方言'
   return '其他'
+}
+
+function extractCosyVoiceLanguage(spkId: string): string {
+  const text = spkId.toLowerCase()
+  if (text.includes('中文') || text.includes('chinese') || text.includes('mandarin')) return '中文（普通话）'
+  if (text.includes('粤语') || text.includes('cantonese') || text.includes('粤')) return '粤语'
+  if (text.includes('英文') || text.includes('english')) return '英语'
+  if (text.includes('日语') || text.includes('japanese')) return '日语'
+  if (text.includes('韩语') || text.includes('korean')) return '韩语'
+  return '中文（普通话）'
 }
 
 function shouldKeepVoice(voice: { voice_id: string, voice_name: string }) {
