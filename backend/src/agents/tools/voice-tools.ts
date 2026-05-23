@@ -65,6 +65,18 @@ export function createVoiceTools(episodeId: number, dramaId: number) {
           { id: 'zh-HK-HiuGaaiNeural', name: '曉佳', gender: '女声', traits: '粤语、温柔', suitable_for: '粤语女声', language: '粤语', provider },
           { id: 'zh-TW-HsiaoChenNeural', name: '曉臻', gender: '女声', traits: '台湾腔、温柔', suitable_for: '台湾女声', language: '中文（台湾）', provider },
         ]
+        : provider === 'cosyvoice'
+        ? [
+          { id: 'sft:中文女', name: '中文女声', gender: '女声', traits: '自然、温柔', suitable_for: '女主、女性角色', language: '中文（普通话）', provider },
+          { id: 'sft:中文男', name: '中文男声', gender: '男声', traits: '沉稳、自然', suitable_for: '男主、男性角色', language: '中文（普通话）', provider },
+          { id: 'sft:粤语女', name: '粤语女声', gender: '女声', traits: '粤语、自然', suitable_for: '粤语女声', language: '粤语', provider },
+          { id: 'sft:英文女', name: '英文女声', gender: '女声', traits: '英文、自然', suitable_for: '英文女声', language: '英语', provider },
+          { id: 'sft:英文男', name: '英文男声', gender: '男声', traits: '英文、自然', suitable_for: '英文男声', language: '英语', provider },
+          { id: 'instruct:中文女', name: '中文女声-指令控制', gender: '女声', traits: '可控情感、方言', suitable_for: '需要情感控制的女声', language: '中文（普通话）', provider },
+          { id: 'instruct:中文男', name: '中文男声-指令控制', gender: '男声', traits: '可控情感、方言', suitable_for: '需要情感控制的男声', language: '中文（普通话）', provider },
+          { id: 'zero_shot', name: '零样本语音克隆', gender: '中性', traits: '声音克隆、3秒参考', suitable_for: '自定义音色、角色原声', language: '多语言', provider },
+          { id: 'cross_lingual', name: '跨语言语音克隆', gender: '中性', traits: '跨语言、声音克隆', suitable_for: '跨语言配音', language: '多语言', provider },
+        ]
         : [
           { id: 'alloy', name: 'Alloy', gender: '中性', traits: '平衡自然', suitable_for: '旁白、通用', language: '多语言', provider },
           { id: 'echo', name: 'Echo', gender: '男声', traits: '低沉稳重', suitable_for: '成熟男性、旁白', language: '多语言', provider },

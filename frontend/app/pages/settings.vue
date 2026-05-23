@@ -53,8 +53,12 @@
               <span v-if="countActive(st.type)" class="tag tag-accent">{{ countActive(st.type) }} 已启用</span>
               <button class="btn btn-ghost btn-sm ml-auto" @click="startAddCfg(st.type)"><Plus :size="13" /> 添加</button>
               <button v-if="st.type === 'audio'" class="btn btn-ghost btn-sm" @click="syncEdgeVoices">
-                <Loader2 v-if="syncingVoices" :size="13" class="animate-spin" />
+                <Loader2 v-if="syncingVoices === 'edge'" :size="13" class="animate-spin" />
                 <span v-else>同步 Edge 音色</span>
+              </button>
+              <button v-if="st.type === 'audio'" class="btn btn-ghost btn-sm" @click="syncCosyVoiceVoices">
+                <Loader2 v-if="syncingVoices === 'cosyvoice'" :size="13" class="animate-spin" />
+                <span v-else>同步 CosyVoice 音色</span>
               </button>
             </div>
             <div class="config-list">
@@ -265,6 +269,10 @@
         <div v-if="cfgForm.provider === 'edge-tts'" class="field">
           <span class="field-label" style="color:var(--accent-text)">Edge TTS 无需 API Key，使用微软免费 TTS 服务</span>
         </div>
+        <div v-if="cfgForm.provider === 'cosyvoice'" class="field">
+          <label class="field"><span class="field-label">CosyVoice 服务地址</span><input v-model="cfgForm.base_url" class="input" placeholder="http://cosyvoice:50000" /></label>
+          <span class="field-label" style="color:var(--accent-text);font-size:11px">CosyVoice 无需 API Key，填写本地部署的 FastAPI 服务地址即可</span>
+        </div>
 
         <label class="field"><span class="field-label">模型（逗号分隔）</span><input v-model="cfgForm.modelStr" class="input" placeholder="model-name" /></label>
         <div v-if="cfgTestResult" class="test-result" :class="{ ok: cfgTestResult.reachable, bad: !cfgTestResult.reachable }">
@@ -346,6 +354,7 @@ const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', mo
 const audioProviderOptions = [
   { label: 'OpenAI 兼容 API', value: 'openai' },
   { label: 'Edge TTS（免费）', value: 'edge-tts' },
+  { label: 'CosyVoice2（本地部署）', value: 'cosyvoice' },
 ]
 const serviceTypes = [{ type: 'text', label: '文本' }, { type: 'image', label: '图片' }, { type: 'video', label: '视频' }, { type: 'audio', label: '音频' }]
 const serviceMeta = {
@@ -422,16 +431,27 @@ async function saveCfg() {
   } catch (e) { toast.error(e.message) }
 }
 
-const syncingVoices = ref(false)
+const syncingVoices = ref(null)
 async function syncEdgeVoices() {
-  syncingVoices.value = true
+  syncingVoices.value = 'edge'
   try {
     const res = await voicesAPI.syncEdge()
     toast.success(res.message || `已同步 ${res.count} 个 Edge TTS 音色`)
   } catch (e) {
     toast.error(e.message)
   } finally {
-    syncingVoices.value = false
+    syncingVoices.value = null
+  }
+}
+async function syncCosyVoiceVoices() {
+  syncingVoices.value = 'cosyvoice'
+  try {
+    const res = await voicesAPI.syncCosyvoice()
+    toast.success(res.message || `已同步 ${res.count} 个 CosyVoice 音色`)
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    syncingVoices.value = null
   }
 }
 

@@ -144,4 +144,5 @@ export const voicesAPI = {
   list: (provider?: string) => api.get(`/ai-voices${provider ? `?provider=${provider}` : ''}`),
   sync: () => api.post('/ai-voices/sync', {}),
   syncEdge: () => api.post('/ai-voices/sync-edge', {}),
+  syncCosyvoice: () => api.post('/ai-voices/sync-cosyvoice', {}),
 }
