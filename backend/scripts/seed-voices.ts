@@ -310,13 +310,46 @@ const voices = [
   { voice_id: "Ukrainian_WiseScholar", voice_name: "Wise Scholar", language: "乌克兰语" },
 ]
 
+const edgeVoices = [
+  { voice_id: "zh-CN-XiaoxiaoNeural", voice_name: "晓晓（温柔女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaoyiNeural", voice_name: "晓伊（甜美女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaochenNeural", voice_name: "晓辰（知性女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaohanNeural", voice_name: "晓涵（优雅女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaomengNeural", voice_name: "晓梦（梦幻女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaomoNeural", voice_name: "晓墨（文艺女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaoqiuNeural", voice_name: "晓秋（成熟女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaoruiNeural", voice_name: "晓睿（智慧女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaoshuangNeural", voice_name: "晓双（童声女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaoxuanNeural", voice_name: "晓萱（清新女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaoyanNeural", voice_name: "晓颜（柔美女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaoyouNeural", voice_name: "晓悠（悠扬女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaozhenNeural", voice_name: "晓甄（端庄女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunxiNeural", voice_name: "云希（清朗男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunyangNeural", voice_name: "云扬（新闻男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunjianNeural", voice_name: "云健（稳重男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunfengNeural", voice_name: "云枫（磁性男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunhaoNeural", voice_name: "云皓（豪迈男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunxiaNeural", voice_name: "云夏（少年男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunyeNeural", voice_name: "云野（野性男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunzeNeural", voice_name: "云泽（深沉男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-XiaoxiaoMultilingualNeural", voice_name: "晓晓多语言（温柔女声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunfanMultilingualNeural", voice_name: "云凡多语言（男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-YunxiaoMultilingualNeural", voice_name: "云霄多语言（男声）", language: "中文（普通话）" },
+  { voice_id: "zh-CN-liaoning-XiaobeiNeural", voice_name: "晓北（东北话女声）", language: "东北话" },
+  { voice_id: "zh-CN-shaanxi-XiaoniNeural", voice_name: "晓妮（陕西话女声）", language: "陕西话" },
+  { voice_id: "zh-HK-HiuGaaiNeural", voice_name: "曉佳（粤语女声）", language: "粤语" },
+  { voice_id: "zh-HK-HiuMaanNeural", voice_name: "曉曼（粤语女声）", language: "粤语" },
+  { voice_id: "zh-HK-WanLungNeural", voice_name: "雲龍（粤语男声）", language: "粤语" },
+  { voice_id: "zh-TW-HsiaoChenNeural", voice_name: "曉臻（台湾女声）", language: "中文（台湾）" },
+  { voice_id: "zh-TW-HsiaoYuNeural", voice_name: "曉雨（台湾女声）", language: "中文（台湾）" },
+  { voice_id: "zh-TW-YunJheNeural", voice_name: "雲哲（台湾男声）", language: "中文（台湾）" },
+]
+
 const ts = new Date().toISOString()
 
-// 清空旧数据
 db.delete(schema.aiVoices).run()
 
-// 批量插入
-const insertRows = voices.map(v => ({
+const minimaxRows = voices.map(v => ({
   voiceId: v.voice_id,
   voiceName: v.voice_name,
   description: '[]',
@@ -325,6 +358,15 @@ const insertRows = voices.map(v => ({
   createdAt: ts,
 }))
 
-db.insert(schema.aiVoices).values(insertRows).run()
+const edgeRows = edgeVoices.map(v => ({
+  voiceId: v.voice_id,
+  voiceName: v.voice_name,
+  description: '[]',
+  language: v.language,
+  provider: 'edge-tts',
+  createdAt: ts,
+}))
 
-console.log(`✅ Inserted ${voices.length} voices`)
+db.insert(schema.aiVoices).values([...minimaxRows, ...edgeRows]).run()
+
+console.log(`✅ Inserted ${minimaxRows.length} minimax voices + ${edgeRows.length} edge-tts voices`)
