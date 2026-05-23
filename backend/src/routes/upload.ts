@@ -8,14 +8,19 @@ const app = new Hono()
 app.post('/image', async (c) => {
   const body = await c.req.parseBody()
   const file = body['file']
-  const subDir = (body['sub_dir'] as string) || 'uploads'
+  const rawSubDir = (body['sub_dir'] as string) || 'uploads'
 
   if (!file || !(file instanceof File)) {
     return badRequest(c, 'file is required')
   }
 
+  // 防止路径遍历
+  if (rawSubDir.includes('..') || rawSubDir.includes('/') || rawSubDir.includes('\\')) {
+    return badRequest(c, 'Invalid sub_dir')
+  }
+
   const buffer = await file.arrayBuffer()
-  const path = await saveUploadedFile(buffer, subDir, file.name)
+  const path = await saveUploadedFile(buffer, rawSubDir, file.name)
   return success(c, { url: `/${path}`, path })
 })
 

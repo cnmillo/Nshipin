@@ -2,9 +2,9 @@ import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, badRequest, notFound, now } from '../utils/response.js'
+import { getStyleKeywords } from '../utils/transform.js'
 import { generateVoiceSample } from '../services/tts-generation.js'
 import { generateImage } from '../services/image-generation.js'
-import { applyStyleToImagePrompt, getDramaStyle } from '../services/style-prompts.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 
 function inferGenderFromVoice(voiceStyle: string): string {
@@ -14,11 +14,11 @@ function inferGenderFromVoice(voiceStyle: string): string {
   return ''
 }
 
-function buildCharImagePrompt(char: any, style?: string | null): { prompt: string; gender: string } {
+function buildCharImagePrompt(char: any, dramaStyle: string): { prompt: string; gender: string } {
   const genderHint = char.gender || inferGenderFromVoice(char.voiceStyle || '')
   const genderText = genderHint === '女声' ? 'female character, young woman' : genderHint === '男声' ? 'male character, young man' : 'character'
-  let prompt = `${char.name} is a ${genderText}. ${char.appearance || char.description || 'portrait'}, character design sheet, three views, front view, side view, back view, white background, full body, consistent proportions, turnaround sheet, high quality, consistent art style, no text, no watermark`
-  prompt = applyStyleToImagePrompt(prompt, style)
+  const styleKeywords = getStyleKeywords(dramaStyle, 'character')
+  const prompt = `${char.name} is a ${genderText}. ${char.appearance || char.description || 'portrait'}, ${styleKeywords}, logically coherent anatomy and proportions, physically plausible pose and body structure, character design sheet, full body three-view turnaround: front view, side view, back view, solid pure white background, no background elements, no shadows on background, high quality, consistent art style, no text, no watermark`
   return { prompt, gender: genderHint }
 }
 
@@ -88,10 +88,11 @@ app.post('/:id/generate-image', async (c) => {
   const [ep] = db.select().from(schema.episodes).where(eq(schema.episodes.id, Number(body.episode_id))).all()
   if (!ep) return badRequest(c, 'Episode not found')
 
-  const dramaStyle = getDramaStyle(char.dramaId)
+  const [drama] = db.select().from(schema.dramas).where(eq(schema.dramas.id, char.dramaId)).all()
+  const dramaStyle = drama?.style || 'realistic'
   const { prompt, gender: genderHint } = buildCharImagePrompt(char, dramaStyle)
   try {
-    logTaskStart('CharacterImage', 'generate', { characterId: id, episodeId: ep.id, dramaId: char.dramaId, gender: genderHint, style: dramaStyle })
+    logTaskStart('CharacterImage', 'generate', { characterId: id, episodeId: ep.id, dramaId: char.dramaId, gender: genderHint })
     const genId = await generateImage({ characterId: id, dramaId: char.dramaId, prompt, configId: ep.imageConfigId ?? undefined })
     logTaskSuccess('CharacterImage', 'generate', { characterId: id, generationId: genId })
     return success(c, { image_generation_id: genId })
@@ -108,11 +109,21 @@ app.post('/batch-generate-images', async (c) => {
   if (!body.episode_id) return badRequest(c, 'episode_id is required')
   const [ep] = db.select().from(schema.episodes).where(eq(schema.episodes.id, Number(body.episode_id))).all()
   if (!ep) return badRequest(c, 'Episode not found')
+
+  // 获取 drama style（所有角色属于同一 drama，取第一个角色的 dramaId）
+  let dramaStyle = 'realistic'
+  if (ids.length) {
+    const [firstChar] = db.select().from(schema.characters).where(eq(schema.characters.id, ids[0])).all()
+    if (firstChar) {
+      const [drama] = db.select().from(schema.dramas).where(eq(schema.dramas.id, firstChar.dramaId)).all()
+      dramaStyle = drama?.style || 'realistic'
+    }
+  }
+
   const results: number[] = []
   for (const cid of ids) {
     const [char] = db.select().from(schema.characters).where(eq(schema.characters.id, cid)).all()
     if (!char) continue
-    const dramaStyle = getDramaStyle(char.dramaId)
     const { prompt } = buildCharImagePrompt(char, dramaStyle)
     try {
       const genId = await generateImage({ characterId: cid, dramaId: char.dramaId, prompt, configId: ep.imageConfigId ?? undefined })

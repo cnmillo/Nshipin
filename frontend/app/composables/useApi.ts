@@ -13,14 +13,15 @@ async function req<T = any>(method: string, path: string, body?: any): Promise<T
     try {
       json = await resp.json()
     } catch {
-      if (!resp.ok) throw new Error(`${resp.status}`)
+      if (!resp.ok) throw new Error(`${resp.status} ${method} ${path} — 响应解析失败`)
       throw new Error('响应解析失败')
     }
     const ms = Math.round(performance.now() - start)
 
     if (!resp.ok || (json.code && json.code >= 400)) {
-      console.log(`%c[API] %c${method} ${path} %c${resp.status} %c${ms}ms`, 'color:#888', 'color:#ef5350', 'color:#ef5350;font-weight:bold', 'color:#888', json.message || '')
-      throw new Error(json.message || `${resp.status}`)
+      const errMsg = json.message || `${resp.status} ${method} ${path}`
+      console.log(`%c[API] %c${method} ${path} %c${resp.status} %c${ms}ms`, 'color:#888', 'color:#ef5350', 'color:#ef5350;font-weight:bold', 'color:#888', errMsg)
+      throw new Error(errMsg)
     }
 
     console.log(`%c[API] %c${method} ${path} %c${resp.status} %c${ms}ms`, 'color:#888', 'color:#66bb6a', 'color:#66bb6a;font-weight:bold', 'color:#888')
@@ -77,7 +78,6 @@ export const storyboardAPI = {
 
 export const characterAPI = {
   update: (id: number, data: any) => api.put(`/characters/${id}`, data),
-  del: (id: number) => api.del(`/characters/${id}`),
   voiceSample: (id: number, episodeId: number) => api.post(`/characters/${id}/generate-voice-sample`, { episode_id: episodeId }),
   generateImage: (id: number, episodeId: number) => api.post(`/characters/${id}/generate-image`, { episode_id: episodeId }),
   batchImages: (ids: number[], episodeId: number) => api.post('/characters/batch-generate-images', { character_ids: ids, episode_id: episodeId }),
@@ -85,7 +85,6 @@ export const characterAPI = {
 
 export const sceneAPI = {
   update: (id: number, data: any) => api.put(`/scenes/${id}`, data),
-  del: (id: number) => api.del(`/scenes/${id}`),
   generateImage: (id: number, episodeId: number) => api.post(`/scenes/${id}/generate-image`, { episode_id: episodeId }),
 }
 

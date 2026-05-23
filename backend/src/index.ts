@@ -23,6 +23,10 @@ import skills from './routes/skills.js'
 import webhooks from './routes/webhooks.js'
 import aiVoices from './routes/aiVoices.js'
 import { requestLogger, errorHandler } from './middleware/logger.js'
+import { recoverStuckVideoRecords } from './services/video-generation.js'
+import { recoverStuckImageRecords } from './services/image-generation.js'
+import { findFfmpeg } from './utils/ffmpeg-path.js'
+import { execFileSync } from 'child_process'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '../..')
@@ -74,13 +78,17 @@ app.use('*', serveStatic({ root: distPath }))
 app.get('*', serveStatic({ root: distPath, path: 'index.html' }))
 
 const port = Number(process.env.PORT || 5679)
+try {
+  const ffmpegCmd = findFfmpeg()
+  execFileSync(ffmpegCmd, ['-version'], { stdio: 'pipe' })
+  console.log(`✅ ffmpeg found: ${ffmpegCmd}`)
+} catch (e: any) {
+  console.warn(`⚠️  ffmpeg not found! PATH=${process.env.PATH?.slice(0, 200)}`, e.message || '')
+}
+recoverStuckImageRecords()
+recoverStuckVideoRecords()
+
 console.log(`🚀 Huobao Drama TS server on http://localhost:${port}`)
-serve({
-  fetch: app.fetch,
-  port,
-  serverOptions: {
-    requestTimeout: 600_000,
-    headersTimeout: 600_000,
-    keepAliveTimeout: 30_000,
-  },
-})
+const server = serve({ fetch: app.fetch, port })
+// Agent 调用 AI 模型可能需要数分钟，增加请求超时避免空响应
+;(server as any).timeout = 300_000 // 5 minutes

@@ -1,5 +1,5 @@
 import { db, schema } from '../db/index.js'
-import { eq } from 'drizzle-orm'
+import { eq, and, lt } from 'drizzle-orm'
 import { getActiveConfig, getConfigById } from './ai.js'
 import { now } from '../utils/response.js'
 import { downloadFile, readImageAsCompressedDataUrl, saveBase64Image } from '../utils/storage.js'
@@ -38,6 +38,7 @@ export async function generateImage(params: GenerateImageParams): Promise<number
     size: params.size || '1920x1080',
     frameType: params.frameType,
     referenceImages: params.referenceImages ? JSON.stringify(params.referenceImages) : null,
+    seed: params.frameType === 'first_frame' ? Math.floor(Math.random() * 9999999999) : null,
     status: 'processing',
     createdAt: ts,
     updatedAt: ts,
@@ -94,6 +95,19 @@ async function processImageGeneration(id: number, config: AIConfig) {
 
     // 使用 Adapter 构建请求
     const resolvedReferenceImages = await normalizeReferenceImages(record.referenceImages)
+
+    let seed: number | null = null
+    if (record.frameType === 'last_frame' && record.storyboardId && !record.seed) {
+      const firstFrame = db.select().from(schema.imageGenerations).all()
+        .find(r => r.storyboardId === record.storyboardId && r.frameType === 'first_frame' && r.status === 'completed' && r.seed != null)
+      if (firstFrame) {
+        seed = firstFrame.seed!
+        db.update(schema.imageGenerations).set({ seed }).where(eq(schema.imageGenerations.id, id)).run()
+      }
+    } else if (record.seed != null) {
+      seed = record.seed
+    }
+
     const { url, method, headers, body } = adapter.buildGenerateRequest(config, {
       id: record.id,
       model: record.model,
@@ -101,6 +115,7 @@ async function processImageGeneration(id: number, config: AIConfig) {
       size: record.size,
       frameType: record.frameType,
       referenceImages: resolvedReferenceImages ? JSON.stringify(resolvedReferenceImages) : null,
+      seed,
     })
     logTaskProgress('ImageTask', 'request', {
       id,
@@ -136,7 +151,10 @@ async function processImageGeneration(id: number, config: AIConfig) {
 
     if (!isAsync && imageUrl) {
       logTaskProgress('ImageTask', 'sync-complete', { id, imageUrl })
-      // 同步模式：直接下载图片
+      const returnedSeed = result.seed ?? null
+      if (returnedSeed != null) {
+        db.update(schema.imageGenerations).set({ seed: returnedSeed }).where(eq(schema.imageGenerations.id, id)).run()
+      }
       await handleImageComplete(id, config.provider, imageUrl)
       return
     }
@@ -192,9 +210,9 @@ async function normalizeReferenceImages(raw: string | null | undefined): Promise
       const localPath = value.startsWith('/static/') ? value.slice(1) : value
       try {
         return await readImageAsCompressedDataUrl(localPath, {
-          maxWidth: 768,
-          maxHeight: 768,
-          quality: 68,
+          maxWidth: 1024,
+          maxHeight: 1024,
+          quality: 90,
         })
       } catch (err) {
         logTaskWarn('ImageTask', 'reference-read-failed', { path: localPath, error: (err as Error).message })
@@ -311,6 +329,28 @@ async function handleImageComplete(id: number, provider: string, imageUrl: strin
   if (record?.sceneId) {
     db.update(schema.scenes).set({ imageUrl: localPath, status: 'completed', updatedAt: now() }).where(eq(schema.scenes.id, record.sceneId)).run()
   }
+}
+
+export function recoverStuckImageRecords() {
+  const cutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+  const stuck = db.select({ id: schema.imageGenerations.id })
+    .from(schema.imageGenerations)
+    .where(and(
+      eq(schema.imageGenerations.status, 'processing'),
+      lt(schema.imageGenerations.updatedAt, cutoff),
+    ))
+    .all()
+
+  if (!stuck.length) return
+
+  const ids = stuck.map(r => r.id)
+  for (const id of ids) {
+    db.update(schema.imageGenerations)
+      .set({ status: 'failed', errorMsg: 'Timeout: record stuck in processing for over 30 minutes', updatedAt: now() })
+      .where(eq(schema.imageGenerations.id, id))
+      .run()
+  }
+  console.log(`Recovered ${ids.length} stuck image records: [${ids.join(', ')}]`)
 }
 
 async function handleImageCompleteBase64(id: number, provider: string, base64Data: string, mimeType: string) {

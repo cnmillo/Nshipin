@@ -7,15 +7,35 @@ import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, badRequest } from '../utils/response.js'
 import { downloadFile } from '../utils/storage.js'
-import { ViduVideoAdapter } from '../services/adapters/vidu-video'
 import { logTaskError, logTaskProgress, logTaskSuccess, logTaskWarn } from '../utils/task-logger.js'
 
 const app = new Hono()
 
+/** 允许下载的域名白名单 */
+const ALLOWED_VIDEO_HOSTS = [
+  'vidu.ai', 'cdn.vidu.ai', 'api.vidu.ai',
+  'oss-cn-beijing.aliyuncs.com', 'oss-cn-shanghai.aliyuncs.com',
+]
+
+function isAllowedVideoUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url)
+    return ALLOWED_VIDEO_HOSTS.some(host => hostname === host || hostname.endsWith('.' + host))
+  } catch {
+    return false
+  }
+}
+
 // POST /webhooks/vidu
 // Vidu 回调格式: { task_id, state, video_url, ... }
 app.post('/vidu', async (c) => {
-  const body = await c.req.json()
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    return badRequest(c, 'Invalid JSON')
+  }
+
   const { task_id, state, video_url, error } = body
   logTaskProgress('Webhook', 'vidu-callback', {
     taskId: task_id,
@@ -35,14 +55,29 @@ app.post('/vidu', async (c) => {
     .all()
 
   if (rows.length === 0) {
-    // 可能任务还没写入（极少见），返回成功避免重复回调
     logTaskWarn('Webhook', 'vidu-task-not-found', { taskId: task_id })
     return success(c, { message: 'Task not found' })
   }
 
   const record = rows[0]
 
+  // 幂等性：已完成则直接返回
+  if (record.status === 'completed') {
+    logTaskProgress('Webhook', 'vidu-already-completed', { taskId: task_id, generationId: record.id })
+    return success(c, { message: 'Already completed' })
+  }
+
   if (state === 'success' && video_url) {
+    // SSRF 防护：校验 video_url 域名
+    if (!isAllowedVideoUrl(video_url)) {
+      logTaskError('Webhook', 'vidu-blocked-url', { taskId: task_id, videoUrl: video_url })
+      db.update(schema.videoGenerations)
+        .set({ status: 'failed', errorMsg: 'Blocked video URL domain' })
+        .where(eq(schema.videoGenerations.id, record.id))
+        .run()
+      return badRequest(c, 'Video URL domain not allowed')
+    }
+
     try {
       const localPath = await downloadFile(video_url, 'videos')
       db.update(schema.videoGenerations)
@@ -76,7 +111,8 @@ app.post('/vidu', async (c) => {
         .set({ status: 'failed', errorMsg: `Webhook download failed: ${err.message}` })
         .where(eq(schema.videoGenerations.id, record.id))
         .run()
-      return badRequest(c, err.message)
+      // 返回 200 避免 Vidu 重复回调
+      return success(c, { message: 'Download failed, status recorded' })
     }
   }
 

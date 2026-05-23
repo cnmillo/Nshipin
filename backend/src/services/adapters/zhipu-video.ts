@@ -23,8 +23,12 @@ export class ZhipuVideoAdapter implements VideoProviderAdapter {
     const model = record.model || config.model || 'cogvideox-flash'
     const body: any = { model, prompt: record.prompt || '' }
 
-    const size = mapZhipuVideoSize(record.aspectRatio)
-    if (size) body.size = size
+    if (!mapZhipuVideoSize(record.aspectRatio)) {
+      body.size = '1920x1080'
+    } else {
+      const size = mapZhipuVideoSize(record.aspectRatio)
+      if (size) body.size = size
+    }
 
     if (record.duration) body.duration = Math.min(record.duration, 10)
     else body.duration = 10

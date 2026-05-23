@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, badRequest, now } from '../utils/response.js'
+import { getStyleKeywords } from '../utils/transform.js'
 import { generateImage } from '../services/image-generation.js'
 import { splitGridImage } from '../services/grid-split.js'
 import { createAgent } from '../agents/index.js'
@@ -36,8 +37,8 @@ function safeParseJsonArray(value: any): string[] {
 
 function getStoryboardCharacterIds(storyboardIds: number[]) {
   if (!storyboardIds.length) return new Map<number, number[]>()
-  const links = db.select().from(schema.storyboardCharacters).all()
-    .filter((link) => storyboardIds.includes(link.storyboardId))
+  const links = db.select().from(schema.storyboardCharacters)
+    .where(inArray(schema.storyboardCharacters.storyboardId, storyboardIds)).all()
   const map = new Map<number, number[]>()
   for (const link of links) {
     const arr = map.get(link.storyboardId) || []
@@ -54,10 +55,10 @@ function collectGridReferenceAssets(storyboards: any[]) {
   const characterIds = [...new Set([...storyboardCharacterIds.values()].flat().filter(Boolean))]
 
   const scenes = sceneIds.length
-    ? db.select().from(schema.scenes).all().filter((scene) => sceneIds.includes(scene.id))
+    ? db.select().from(schema.scenes).where(inArray(schema.scenes.id, sceneIds)).all()
     : []
   const characters = characterIds.length
-    ? db.select().from(schema.characters).all().filter((char) => characterIds.includes(char.id))
+    ? db.select().from(schema.characters).where(inArray(schema.characters.id, characterIds)).all()
     : []
 
   const assets: Array<{
@@ -67,13 +68,15 @@ function collectGridReferenceAssets(storyboards: any[]) {
     sceneId?: number
     characterId?: number
     storyboardId?: number
+    appearance?: string
+    gender?: string
   }> = []
   const seen = new Set<string>()
   const pushAsset = (
     path: string | null | undefined,
     label: string,
     kind: 'scene' | 'character' | 'storyboard',
-    extra: { sceneId?: number; characterId?: number; storyboardId?: number } = {},
+    extra: { sceneId?: number; characterId?: number; storyboardId?: number; appearance?: string; gender?: string } = {},
   ) => {
     if (!path || seen.has(path) || assets.length >= 6) return
     seen.add(path)
@@ -92,7 +95,7 @@ function collectGridReferenceAssets(storyboards: any[]) {
     pushAsset(scene.imageUrl, `${scene.location}${scene.time ? `（${scene.time}）` : ''}场景`, 'scene', { sceneId: scene.id })
   }
   for (const char of characters) {
-    pushAsset(char.imageUrl, `${char.name}角色`, 'character', { characterId: char.id })
+    pushAsset(char.imageUrl, `${char.name}角色`, 'character', { characterId: char.id, appearance: char.appearance || '', gender: char.gender || '' })
   }
 
   return assets.map((asset, index) => ({
@@ -107,9 +110,20 @@ function buildReferenceLegend(referenceAssets: Array<{ imageLabel: string; label
   return referenceAssets.map((asset) => `${asset.imageLabel}=${asset.label}`).join('；')
 }
 
+function buildCharacterDescriptions(referenceAssets: Array<{ kind: string; label: string; appearance?: string; gender?: string }>) {
+  const charAssets = referenceAssets.filter(a => a.kind === 'character' && (a.appearance || a.gender))
+  if (!charAssets.length) return ''
+  return charAssets.map(a => {
+    const name = a.label.replace(/角色$/, '')
+    const genderRef = a.gender === '女' || a.gender === '女声' ? 'female' : a.gender === '男' || a.gender === '男声' ? 'male' : ''
+    const parts = [genderRef, a.appearance].filter(Boolean)
+    return parts.length ? `${name}：${parts.join(', ')}` : ''
+  }).filter(Boolean).join('；')
+}
+
 function buildStoryboardReferenceHints(
   sb: any,
-  referenceAssets: Array<{ path: string; label: string; kind: string; imageLabel: string; sceneId?: number; characterId?: number; storyboardId?: number }>,
+  referenceAssets: Array<{ path: string; label: string; kind: string; imageLabel: string; sceneId?: number; characterId?: number; storyboardId?: number; appearance?: string; gender?: string }>,
   storyboardCharacterIds: Map<number, number[]>,
 ) {
   const hints: string[] = []
@@ -121,7 +135,10 @@ function buildStoryboardReferenceHints(
     }
     if (asset.kind === 'character') {
       if (asset.characterId && charIds.includes(asset.characterId)) {
-        hints.push(`${asset.imageLabel}（${asset.label}）`)
+        const genderRef = asset.gender === '女' || asset.gender === '女声' ? 'female' : asset.gender === '男' || asset.gender === '男声' ? 'male' : ''
+        const appearancePart = asset.appearance ? `, ${asset.appearance}` : ''
+        const detail = genderRef || asset.appearance ? `（${genderRef}${appearancePart}）` : ''
+        hints.push(`${asset.imageLabel}（${asset.label}${detail}）`)
       }
     }
     if (asset.kind === 'storyboard' && asset.storyboardId === sb.id) {
@@ -139,11 +156,13 @@ function buildGridPrompt(
   rows: number,
   cols: number,
   dramaStyle: string,
-  referenceAssets: Array<{ path: string; label: string; kind: string; imageLabel: string }>,
+  referenceAssets: Array<{ path: string; label: string; kind: string; imageLabel: string; appearance?: string; gender?: string }>,
 ): string {
-  const style = dramaStyle || 'cinematic'
+  const style = dramaStyle || 'realistic'
+  const styleKeywords = getStyleKeywords(style, 'scene')
   const storyboardCharacterIds = getStoryboardCharacterIds(storyboards.map((sb) => sb.id))
   const legend = buildReferenceLegend(referenceAssets)
+  const charDescs = buildCharacterDescriptions(referenceAssets)
 
   if (mode === 'first_frame') {
     // Each cell = one shot's first frame
@@ -153,11 +172,12 @@ function buildGridPrompt(
       return `${cellLabel(i, rows, cols)}: ${refs.length ? `参考${refs.join('、')}，` : ''}${desc}`
     })
     return [
-      `${rows}x${cols} grid layout, consistent art style, ${style},`,
+      `${rows}x${cols} grid layout, consistent art style, ${styleKeywords},`,
       legend ? `参考图映射：${legend}` : '',
+      charDescs ? `角色形象：${charDescs}` : '',
       '当画面涉及角色或场景时，优先使用对应的图片编号来约束一致性。',
       ...cells,
-      'high quality, cinematic lighting, no text, no watermark',
+      'high quality, no text, no watermark',
     ].filter(Boolean).join('\n')
   }
 
@@ -175,11 +195,12 @@ function buildGridPrompt(
       return `${cellLabel(i, rows, cols)}: ${refs.length ? `参考${refs.join('、')}，` : ''}${desc}, ${frameHint}`
     })
     return [
-      `${rows}x${cols} grid layout, consistent art style, ${style},`,
+      `${rows}x${cols} grid layout, consistent art style, ${styleKeywords},`,
       legend ? `参考图映射：${legend}` : '',
+      charDescs ? `角色形象：${charDescs}` : '',
       'first/last frame visual rhythm, alternating opening and closing beats across the grid,',
       ...cells,
-      'continuous motion implied between left and right, high quality, no text',
+      'continuous motion implied between left and right, high quality, no text, no watermark',
     ].filter(Boolean).join('\n')
   }
 
@@ -203,15 +224,16 @@ function buildGridPrompt(
       return `${cellLabel(i, rows, cols)}: ${legend ? `参考${legend}，` : ''}${desc}, ${angles[i % angles.length]}`
     })
     return [
-      `${rows}x${cols} grid layout, same scene different angles and compositions, ${style},`,
+      `${rows}x${cols} grid layout, same scene different angles and compositions, ${styleKeywords},`,
       legend ? `参考图映射：${legend}` : '',
+      charDescs ? `角色形象：${charDescs}` : '',
       `main scene: ${desc},`,
       ...cells,
-      'consistent lighting and color palette, high quality, no text',
+      'consistent lighting and color palette, high quality, no text, no watermark',
     ].filter(Boolean).join('\n')
   }
 
-  return `${rows}x${cols} grid, ${style}, storyboard frames, high quality`
+  return `${rows}x${cols} grid, ${styleKeywords}, storyboard frames, high quality, no text, no watermark`
 }
 
 function buildGridCellPrompts(
@@ -241,7 +263,7 @@ function buildGridCellPrompts(
     return Array.from({ length: rows * cols }, (_, i) => ({
       shot_number: sb.storyboardNumber,
       frame_type: 'reference',
-      prompt: `${cellLabel(i, rows, cols)}: ${buildStoryboardReferenceHints(sb, referenceAssets, storyboardCharacterIds).join('、')}${buildStoryboardReferenceHints(sb, referenceAssets, storyboardCharacterIds).length ? '，' : ''}${desc}, ${angles[i % angles.length]}`,
+      prompt: `${cellLabel(i, rows, cols)}: ${buildStoryboardReferenceHints(sb, referenceAssets, storyboardCharacterIds).join('、')}${buildStoryboardReferenceHints(sb, referenceAssets, storyboardCharacterIds).length ? '，' : ''}${desc}, ${angles[i % angles.length]}, no text, no watermark`,
     }))
   }
 
@@ -256,8 +278,8 @@ function buildGridCellPrompts(
         shot_number: sb.storyboardNumber,
         frame_type: isFirst ? 'first_frame' : 'last_frame',
         prompt: isFirst
-          ? `${cellLabel(i, rows, cols)}，首帧：${refs.length ? `参考${refs.join('、')}，` : ''}${desc}${sb.location ? `, ${sb.location}` : ''}${sb.shotType ? `, ${sb.shotType}` : ''}`
-          : `${cellLabel(i, rows, cols)}，尾帧：${refs.length ? `参考${refs.join('、')}，` : ''}${desc}${motion ? `, ${motion}` : ''}${sb.location ? `, ${sb.location}` : ''}${sb.shotType ? `, ${sb.shotType}` : ''}`,
+          ? `${cellLabel(i, rows, cols)}，首帧：${refs.length ? `参考${refs.join('、')}，` : ''}${desc}${sb.location ? `, ${sb.location}` : ''}${sb.shotType ? `, ${sb.shotType}` : ''}, no text, no watermark`
+          : `${cellLabel(i, rows, cols)}，尾帧：${refs.length ? `参考${refs.join('、')}，` : ''}${desc}${motion ? `, ${motion}` : ''}${sb.location ? `, ${sb.location}` : ''}${sb.shotType ? `, ${sb.shotType}` : ''}, no text, no watermark`,
       }
     })
   }
@@ -268,7 +290,7 @@ function buildGridCellPrompts(
     return {
       shot_number: sb.storyboardNumber,
       frame_type: 'first_frame',
-      prompt: `${cellLabel(index, rows, cols)}：${refs.length ? `参考${refs.join('、')}，` : ''}${desc}${sb.location ? `, ${sb.location}` : ''}${sb.shotType ? `, ${sb.shotType}` : ''}, opening scene`,
+      prompt: `${cellLabel(index, rows, cols)}：${refs.length ? `参考${refs.join('、')}，` : ''}${desc}${sb.location ? `, ${sb.location}` : ''}${sb.shotType ? `, ${sb.shotType}` : ''}, opening scene, no text, no watermark`,
     }
   })
 }
@@ -352,6 +374,7 @@ async function tryAgentGridPrompt(
   cols: number,
   mode: string,
   referenceLegend: string,
+  charDescriptions: string,
 ) {
   const agent = createAgent('grid_prompt_generator', episodeId, dramaId)
   if (!agent) return null
@@ -366,7 +389,9 @@ async function tryAgentGridPrompt(
         `列数：${cols}`,
         `模式：${mode}`,
         referenceLegend ? `参考图映射：${referenceLegend}` : '',
+        charDescriptions ? `角色形象：${charDescriptions}` : '',
         '当提示词涉及到某个角色或场景时，直接把对应的图片编号写进提示词，例如：图片1中的角色A站了起来，图片3中的房间场景。不要只写名字，不写图片编号。',
+        '角色形象描述必须严格遵循，确保每个角色的外貌、服装、体型等视觉特征在所有画面中保持一致。',
         `必须严格按 ${rows}x${cols} 生成，总共 exactly ${rows * cols} visible panels。不要合并格子，不要缺格。`,
         '必须返回 JSON，结构为：{"grid_prompt":"...","cell_prompts":[{"shot_number":1,"frame_type":"first_frame","prompt":"..."}]}',
       ].join('\n'),
@@ -398,10 +423,8 @@ app.post('/prompt', async (c) => {
   if (!storyboard_ids?.length) return badRequest(c, 'storyboard_ids required')
   if (!rows || !cols) return badRequest(c, 'rows and cols required')
 
-  const storyboards = storyboard_ids.map((id: number) => {
-    const [sb] = db.select().from(schema.storyboards).where(eq(schema.storyboards.id, id)).all()
-    return sb
-  }).filter(Boolean)
+  const storyboards = db.select().from(schema.storyboards)
+    .where(inArray(schema.storyboards.id, storyboard_ids)).all()
 
   if (!storyboards.length) return badRequest(c, 'No storyboards found')
 
@@ -416,6 +439,7 @@ app.post('/prompt', async (c) => {
   const resolvedEpisodeId = Number(episode_id || storyboards[0]?.episodeId || 0)
   const referenceAssets = collectGridReferenceAssets(storyboards)
   const referenceLegend = buildReferenceLegend(referenceAssets)
+  const charDescriptions = buildCharacterDescriptions(referenceAssets)
 
   if (!resolvedEpisodeId) {
     return badRequest(c, 'episode_id required')
@@ -430,6 +454,7 @@ app.post('/prompt', async (c) => {
       actualCols,
       mode,
       referenceLegend,
+      charDescriptions,
     )
 
     if (agentPayload?.grid_prompt) {
@@ -494,10 +519,8 @@ app.post('/generate', async (c) => {
   if (!storyboard_ids?.length) return badRequest(c, 'storyboard_ids required')
   if (!rows || !cols) return badRequest(c, 'rows and cols required')
 
-  const storyboards = storyboard_ids.map((id: number) => {
-    const [sb] = db.select().from(schema.storyboards).where(eq(schema.storyboards.id, id)).all()
-    return sb
-  }).filter(Boolean)
+  const storyboards = db.select().from(schema.storyboards)
+    .where(inArray(schema.storyboards.id, storyboard_ids)).all()
 
   if (!storyboards.length) return badRequest(c, 'No storyboards found')
 

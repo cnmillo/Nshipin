@@ -10,15 +10,27 @@ import { v4 as uuid } from 'uuid'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { now } from '../utils/response.js'
+import { findFfmpeg } from '../utils/ffmpeg-path.js'
 import { generateTTS } from './tts-generation.js'
 import { logTaskError, logTaskProgress, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const STORAGE_ROOT = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../data/static')
 const DATA_ROOT = path.resolve(__dirname, '../../../data')
+
+const FFMPEG_PATH = findFfmpeg()
+ffmpeg.setFfmpegPath(FFMPEG_PATH)
 let subtitleFilterSupport: boolean | null = null
 const IGNORE_TTS_SPEAKERS = /^(环境音|环境声|音效|效果音|sfx|sound ?effect|bgm|背景音|背景音乐|ambient)$/i
 const IGNORE_TTS_TEXT = /^(无|无对白|无台词|无旁白|无需配音|无需对白|none|null|n\/a|na|环境音|环境声|音效|效果音|纯音效|纯环境音|只有环境音|仅环境音|背景音|背景音乐|bgm|sfx|ambient)$/i
+
+function fmtSrtTime(sec: number): string {
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = Math.floor(sec % 60)
+  const ms = Math.round((sec % 1) * 1000)
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`
+}
 
 function toAbsPath(relativePath: string): string {
   if (path.isAbsolute(relativePath)) return relativePath
@@ -29,7 +41,7 @@ function toAbsPath(relativePath: string): string {
 function supportsSubtitleFilter(): boolean {
   if (subtitleFilterSupport != null) return subtitleFilterSupport
   try {
-    const output = execFileSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8' })
+    const output = execFileSync(FFMPEG_PATH, ['-hide_banner', '-filters'], { encoding: 'utf8' })
     subtitleFilterSupport = /\bsubtitles\b/.test(output)
   } catch {
     subtitleFilterSupport = false
@@ -40,11 +52,29 @@ function supportsSubtitleFilter(): boolean {
 function parseDialogueForTTS(dialogue?: string | null) {
   const raw = dialogue?.trim() || ''
   if (!raw) return { speaker: '', pureText: '', ignorable: true }
-  const speakerMatch = raw.match(/^(.+?)[:：]/)
-  const speaker = speakerMatch ? speakerMatch[1].replace(/[（(].+?[)）]/g, '').trim() : ''
-  const pureText = raw.replace(/^.+?[:：]\s*/, '').replace(/[（(].+?[)）]/g, '').trim()
-  const ignorable = (!!speaker && IGNORE_TTS_SPEAKERS.test(speaker)) || !pureText || IGNORE_TTS_TEXT.test(pureText)
-  return { speaker, pureText, ignorable }
+  // 尝试按 "角色名：台词" 模式拆分多角色对白
+  const pattern = /([^：:]+?)[：:]\s*([^：:]*?)(?=\s+[^：:]+?[：:]|$)/g
+  const segments: { speaker: string; text: string }[] = []
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(raw)) !== null) {
+    const speaker = match[1].replace(/[（(].+?[)）]/g, '').trim()
+    const text = match[2].replace(/[（(].+?[)）]/g, '').trim()
+    if (speaker && text) segments.push({ speaker, text })
+  }
+  if (segments.length === 0) {
+    const pureText = raw.replace(/[（(].+?[)）]/g, '').trim()
+    if (!pureText || IGNORE_TTS_TEXT.test(pureText)) return { speaker: '', pureText: '', ignorable: true }
+    return { speaker: '', pureText, ignorable: false }
+  }
+  // 多角色时，pureText 为全部台词拼接（用于字幕），speaker 为第一个说话人（用于回退音色查找）
+  const firstSpeaker = segments[0].speaker
+  if (IGNORE_TTS_SPEAKERS.test(firstSpeaker)) {
+    const nonIgnored = segments.find(s => !IGNORE_TTS_SPEAKERS.test(s.speaker))
+    if (!nonIgnored) return { speaker: '', pureText: '', ignorable: true }
+  }
+  const pureText = segments.map(s => s.text).join(' ')
+  const ignorable = !pureText || IGNORE_TTS_TEXT.test(pureText)
+  return { speaker: firstSpeaker, pureText, ignorable }
 }
 
 /**
@@ -123,10 +153,36 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
       const srtFilename = `${uuid()}.srt`
       subtitlePath = path.join(srtDir, srtFilename)
 
-      const duration = sb.duration || 10
+      let actualDuration = sb.duration || 10
+      try {
+        const probeData = await new Promise<number>((resolve) => {
+          ffmpeg.ffprobe(videoPath, (err, meta) => {
+            if (err || !meta.format?.duration) resolve(actualDuration)
+            else resolve(Math.round(meta.format.duration * 10) / 10)
+          })
+        })
+        actualDuration = probeData
+      } catch {}
+
       const pureText = parsedDialogue.pureText
-      const srtContent = `1\n00:00:00,500 --> 00:00:${String(Math.min(duration - 1, 59)).padStart(2, '0')},000\n${pureText}\n`
-      fs.writeFileSync(subtitlePath, srtContent, 'utf-8')
+      const CHARS_PER_SEGMENT = 12
+      const segments: string[] = []
+      for (let i = 0; i < pureText.length; i += CHARS_PER_SEGMENT) {
+        segments.push(pureText.slice(i, i + CHARS_PER_SEGMENT))
+      }
+
+      const totalSec = Math.max(actualDuration, 1)
+      const segDuration = totalSec / segments.length
+      const srtLines: string[] = []
+      for (let i = 0; i < segments.length; i++) {
+        const startSec = i * segDuration
+        const endSec = Math.min((i + 1) * segDuration, totalSec)
+        srtLines.push(`${i + 1}`)
+        srtLines.push(`${fmtSrtTime(startSec)} --> ${fmtSrtTime(endSec)}`)
+        srtLines.push(segments[i])
+        srtLines.push('')
+      }
+      fs.writeFileSync(subtitlePath, srtLines.join('\n'), 'utf-8')
 
       const srtRelative = `static/subtitles/${srtFilename}`
       db.update(schema.storyboards).set({ subtitleUrl: srtRelative, updatedAt: now() })
@@ -144,6 +200,9 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
 
       if (audioPath) {
         cmd = cmd.input(audioPath)
+      } else {
+        cmd = cmd.input('anullsrc=channel_layout=stereo:sample_rate=48000')
+        cmd = cmd.inputOptions(['-f', 'lavfi'])
       }
 
       const filters: string[] = []
@@ -153,7 +212,7 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
           .replace(/\\/g, '/')
           .replace(/:/g, '\\:')
           .replace(/'/g, "\\'")
-        const forceStyle = 'FontSize=20\\,PrimaryColour=&HFFFFFF&\\,OutlineColour=&H000000&\\,Outline=2'
+        const forceStyle = 'FontSize=16\\,PrimaryColour=&HFFFFFF&\\,OutlineColour=&H000000&\\,Outline=2\\,MarginV=45\\,MarginL=20\\,MarginR=20\\,WrapStyle=0'
         filters.push(`subtitles=filename='${escapedPath}':force_style='${forceStyle}'`)
       } else if (subtitlePath) {
         logTaskProgress('ComposeTask', 'subtitle-filter-unavailable', {
@@ -166,13 +225,7 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
         cmd = cmd.videoFilter(filters)
       }
 
-      const outputOptions = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '23']
-
-      if (audioPath) {
-        outputOptions.push('-map', '0:v', '-map', '1:a', '-c:a', 'aac', '-shortest')
-      } else {
-        outputOptions.push('-an')
-      }
+      const outputOptions = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-map', '0:v', '-map', '1:a', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-shortest']
 
       cmd.outputOptions(outputOptions)
         .output(outputPath)

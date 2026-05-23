@@ -11,6 +11,16 @@ import { joinProviderUrl } from '../services/adapters/url.js'
 
 const app = new Hono()
 
+function safeJsonParse(value: any): any[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
 // GET /ai-voices?provider=minimax
 app.get('/', async (c) => {
   const provider = c.req.query('provider') || 'minimax'
@@ -21,7 +31,7 @@ app.get('/', async (c) => {
   const parsed = rows.map(r => ({
     voice_id: r.voiceId,
     voice_name: r.voiceName,
-    description: r.description ? JSON.parse(r.description) : [],
+    description: safeJsonParse(r.description),
     language: r.language,
     provider: r.provider,
   }))
@@ -105,55 +115,18 @@ app.post('/sync-edge', async (c) => {
     if (!resp.ok) return badRequest(c, `Edge TTS voices API error: ${resp.status}`)
     const allVoices = await resp.json() as any[]
     const voices = allVoices.filter((v: any) => v.Locale && v.Locale.startsWith('zh-'))
-
-    const extraVoices = [
-      { ShortName: 'zh-CN-XiaochenNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaochenNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '知性' },
-      { ShortName: 'zh-CN-XiaohanNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaohanNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '优雅' },
-      { ShortName: 'zh-CN-XiaomengNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaomengNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '梦幻' },
-      { ShortName: 'zh-CN-XiaomoNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaomoNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '文艺' },
-      { ShortName: 'zh-CN-XiaoqiuNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoqiuNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '成熟' },
-      { ShortName: 'zh-CN-XiaoruiNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoruiNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '智慧' },
-      { ShortName: 'zh-CN-XiaoshuangNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoshuangNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '活泼' },
-      { ShortName: 'zh-CN-XiaoxuanNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxuanNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '清新' },
-      { ShortName: 'zh-CN-XiaoyanNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoyanNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '柔美' },
-      { ShortName: 'zh-CN-XiaoyouNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoyouNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '悠扬' },
-      { ShortName: 'zh-CN-XiaozhenNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, XiaozhenNeural)', Gender: 'Female', Locale: 'zh-CN', Tag: '端庄' },
-      { ShortName: 'zh-CN-YunfengNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, YunfengNeural)', Gender: 'Male', Locale: 'zh-CN', Tag: '磁性' },
-      { ShortName: 'zh-CN-YunhaoNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, YunhaoNeural)', Gender: 'Male', Locale: 'zh-CN', Tag: '豪迈' },
-      { ShortName: 'zh-CN-YunyeNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, YunyeNeural)', Gender: 'Male', Locale: 'zh-CN', Tag: '野性' },
-      { ShortName: 'zh-CN-YunzeNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN, YunzeNeural)', Gender: 'Male', Locale: 'zh-CN', Tag: '深沉' },
-      { ShortName: 'zh-CN-shandong-YunxiangNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN-shandong, YunxiangNeural)', Gender: 'Male', Locale: 'zh-CN-shandong', Tag: '山东话' },
-      { ShortName: 'zh-CN-sichuan-YunxiNeural', FriendlyName: 'Microsoft Server Speech Text to Speech Voice (zh-CN-sichuan, YunxiNeural)', Gender: 'Male', Locale: 'zh-CN-sichuan', Tag: '四川话' },
-    ]
-
-    const existingShortNames = new Set(voices.map((v: any) => v.ShortName))
-    for (const ev of extraVoices) {
-      if (!existingShortNames.has(ev.ShortName)) {
-        voices.push({
-          ShortName: ev.ShortName,
-          FriendlyName: ev.FriendlyName,
-          Gender: ev.Gender,
-          Locale: ev.Locale,
-          _extraTag: ev.Tag,
-        })
-      }
-    }
-
     const ts = now()
 
     db.delete(schema.aiVoices).where(eq(schema.aiVoices.provider, 'edge-tts')).run()
 
-    const insertRows = voices.map((v: any) => {
-      const tag = v._extraTag || (v.VoiceTag?.VoicePersonalities ? v.VoiceTag.VoicePersonalities.join('、') : '')
-      return {
-        voiceId: v.ShortName,
-        voiceName: v.FriendlyName,
-        description: JSON.stringify([v.Gender, v.Locale, tag].filter(Boolean)),
-        language: extractEdgeLanguage(v.Locale),
-        provider: 'edge-tts',
-        createdAt: ts,
-      }
-    })
+    const insertRows = voices.map((v: any) => ({
+      voiceId: v.ShortName,
+      voiceName: v.FriendlyName,
+      description: JSON.stringify([v.Gender, v.Locale]),
+      language: extractEdgeLanguage(v.Locale),
+      provider: 'edge-tts',
+      createdAt: ts,
+    }))
 
     if (insertRows.length > 0) {
       db.insert(schema.aiVoices).values(insertRows).run()

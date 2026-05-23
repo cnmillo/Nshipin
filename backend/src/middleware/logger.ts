@@ -61,8 +61,16 @@ export const errorHandler: MiddlewareHandler = async (c, next) => {
     await next()
   } catch (err: any) {
     const status = err.status || 500
-    console.error(`${colors.red}[ERROR]${colors.reset} ${c.req.method} ${c.req.path}`)
+    const method = c.req.method
+    const path = c.req.path
+    console.error(`${colors.red}[ERROR]${colors.reset} ${method} ${path} ${status}`)
     console.error(err.stack || err.message || err)
-    return c.json({ code: status, message: err.message || 'Internal Server Error' }, status)
+
+    // 500 错误返回更详细的信息，帮助前端定位问题
+    const message = status >= 500
+      ? `${method} ${path} — ${err.message || 'Internal Server Error'}`
+      : (err.message || 'Internal Server Error')
+
+    return c.json({ code: status, message }, status)
   }
 }

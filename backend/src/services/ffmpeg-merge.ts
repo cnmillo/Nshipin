@@ -9,11 +9,15 @@ import { v4 as uuid } from 'uuid'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { now } from '../utils/response.js'
+import { findFfmpeg } from '../utils/ffmpeg-path.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const STORAGE_ROOT = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../data/static')
 const DATA_ROOT = path.resolve(__dirname, '../../../data')
+
+const FFMPEG_PATH = findFfmpeg()
+ffmpeg.setFfmpegPath(FFMPEG_PATH)
 
 function toAbsPath(relativePath: string): string {
   if (path.isAbsolute(relativePath)) return relativePath
@@ -91,11 +95,14 @@ async function doMerge(mergeId: number, episodeId: number, videos: string[]) {
       .inputOptions(['-f', 'concat', '-safe', '0'])
       .outputOptions([
         '-fflags', '+genpts',
+        '-map', '0:v',
+        '-map', '0:a?',
         '-c:v', 'libx264',
         '-preset', 'medium',
         '-crf', '23',
         '-c:a', 'aac',
         '-ar', '48000',
+        '-ac', '2',
         '-b:a', '192k',
         '-movflags', '+faststart',
       ])

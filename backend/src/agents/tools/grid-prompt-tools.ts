@@ -11,8 +11,12 @@ import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { db, schema } from '../../db/index.js'
 import { eq } from 'drizzle-orm'
+import { getStyleKeywords } from '../../utils/transform.js'
 
 export function createGridPromptTools(episodeId: number, dramaId: number) {
+  // 获取 drama 视觉风格
+  const [drama] = db.select().from(schema.dramas).where(eq(schema.dramas.id, dramaId)).all()
+  const dramaStyle = drama?.style || 'realistic'
 
   // ─── 角色提示词 ───────────────────────────────────────
 
@@ -55,7 +59,8 @@ export function createGridPromptTools(episodeId: number, dramaId: number) {
       if (c.personality) parts.push(`personality: ${c.personality}`)
 
       const base = parts.join(', ')
-      const prompt = `${base}, cinematic portrait, high quality, consistent art style, no text, no watermark`
+      const styleKeywords = getStyleKeywords(dramaStyle, 'character')
+      const prompt = `${base}, ${styleKeywords}, character design sheet, full body three-view turnaround: front view, side view, back view, solid pure white background, no background elements, no shadows on background, high quality, consistent art style, no text, no watermark`
 
       return {
         character_id: c.id,
@@ -103,7 +108,8 @@ export function createGridPromptTools(episodeId: number, dramaId: number) {
       if (s.prompt) parts.push(s.prompt)
 
       const base = parts.join(', ')
-      const prompt = `${base}, cinematic scene, atmospheric lighting, high quality, consistent art style, no text, no watermark`
+      const styleKeywords = getStyleKeywords(dramaStyle, 'scene')
+      const prompt = `${base}, ${styleKeywords}, high quality, consistent art style, no text, no watermark`
 
       return {
         scene_id: s.id,
@@ -159,14 +165,15 @@ export function createGridPromptTools(episodeId: number, dramaId: number) {
       if (!shots.length) return { error: 'No shots provided', grid_prompt: '', cell_prompts: [] }
       const totalCells = rows * cols
       const legendPrefix = reference_legend ? `参考图映射：${reference_legend}, ` : ''
+      const styleKeywords = getStyleKeywords(dramaStyle, 'scene')
 
       if (mode === 'multi_ref') {
         const sb = shots[0]
-        const gridPrompt = `${rows}x${cols} grid layout, exactly ${totalCells} visible panels, consistent art style, cinematic quality, ${legendPrefix}${sb.description}, all cells with identical lighting and color palette, no merged panels, no missing panels, no text, no watermark`
+        const gridPrompt = `${rows}x${cols} grid layout, exactly ${totalCells} visible panels, consistent art style, ${styleKeywords}, ${legendPrefix}${sb.description}, all cells with identical lighting and color palette, no merged panels, no missing panels, no text, no watermark`
         const cellPrompts = Array.from({ length: totalCells }, (_, i) => ({
           shot_number: sb.shot_number,
           frame_type: 'reference',
-          prompt: `格${i + 1}：${reference_legend ? `参考${reference_legend}，` : ''}${sb.description}, cinematic lighting, consistent with other cells in the ${rows}x${cols} grid`,
+          prompt: `格${i + 1}：${reference_legend ? `参考${reference_legend}，` : ''}${sb.description}, ${styleKeywords}, consistent with other cells in the ${rows}x${cols} grid, no text, no watermark`,
         }))
         return { grid_prompt: gridPrompt, cell_prompts: cellPrompts }
       }
@@ -180,11 +187,11 @@ export function createGridPromptTools(episodeId: number, dramaId: number) {
             shot_number: s.shot_number,
             frame_type: isFirst ? 'first_frame' : 'last_frame',
             prompt: isFirst
-              ? `格${i + 1}：${reference_legend ? `参考${reference_legend}，` : ''}${s.description}${s.location ? `, ${s.location}` : ''}${s.shot_type ? `, ${s.shot_type}` : ''}, opening scene`
-              : `格${i + 1}：${reference_legend ? `参考${reference_legend}，` : ''}${s.description}${s.location ? `, ${s.location}` : ''}${s.shot_type ? `, ${s.shot_type}` : ''}, ending scene, continuous motion`,
+              ? `格${i + 1}：${reference_legend ? `参考${reference_legend}，` : ''}${s.description}${s.location ? `, ${s.location}` : ''}${s.shot_type ? `, ${s.shot_type}` : ''}, opening scene, ${styleKeywords}, no text, no watermark`
+              : `格${i + 1}：${reference_legend ? `参考${reference_legend}，` : ''}${s.description}${s.location ? `, ${s.location}` : ''}${s.shot_type ? `, ${s.shot_type}` : ''}, ending scene, continuous motion, ${styleKeywords}, no text, no watermark`,
           })
         }
-        const gridPrompt = `${rows}x${cols} grid layout, exactly ${totalCells} visible panels, consistent art style, cinematic quality, ${legendPrefix}${shots.map(s => s.description).join(' | ')}, no merged panels, no missing panels, no text, no watermark`
+        const gridPrompt = `${rows}x${cols} grid layout, exactly ${totalCells} visible panels, consistent art style, ${styleKeywords}, ${legendPrefix}${shots.map(s => s.description).join(' | ')}, no merged panels, no missing panels, no text, no watermark`
         return { grid_prompt: gridPrompt, cell_prompts: cellPrompts }
       }
 
@@ -194,10 +201,10 @@ export function createGridPromptTools(episodeId: number, dramaId: number) {
         return {
           shot_number: s.shot_number,
           frame_type: 'first_frame',
-          prompt: `格${i + 1}：${reference_legend ? `参考${reference_legend}，` : ''}${s.description}${s.location ? `, ${s.location}` : ''}${s.shot_type ? `, ${s.shot_type}` : ''}, opening scene`,
+          prompt: `格${i + 1}：${reference_legend ? `参考${reference_legend}，` : ''}${s.description}${s.location ? `, ${s.location}` : ''}${s.shot_type ? `, ${s.shot_type}` : ''}, opening scene, ${styleKeywords}, no text, no watermark`,
         }
       })
-      const gridPrompt = `${rows}x${cols} grid layout, exactly ${totalCells} visible panels, consistent art style, cinematic quality, ${legendPrefix}${shots.map(s => s.description).join(' | ')}, no merged panels, no missing panels, no text, no watermark`
+      const gridPrompt = `${rows}x${cols} grid layout, exactly ${totalCells} visible panels, consistent art style, ${styleKeywords}, ${legendPrefix}${shots.map(s => s.description).join(' | ')}, no merged panels, no missing panels, no text, no watermark`
       return { grid_prompt: gridPrompt, cell_prompts: cellPrompts }
     },
   })

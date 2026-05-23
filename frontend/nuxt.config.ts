@@ -21,7 +21,7 @@ export default defineNuxtConfig({
     },
     server: {
       proxy: {
-        '/api': { target: 'http://localhost:5679', changeOrigin: true },
+        '/api': { target: 'http://localhost:5679', changeOrigin: true, timeout: 300000 },
         '/static': { target: 'http://localhost:5679', changeOrigin: true },
       },
     },

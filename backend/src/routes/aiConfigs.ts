@@ -18,8 +18,9 @@ function buildProbe(serviceType: string, provider: string, baseUrl: string, mode
 // GET /ai-configs?service_type=text
 app.get('/', async (c) => {
   const serviceType = c.req.query('service_type')
-  let rows = db.select().from(schema.aiServiceConfigs).all()
-  if (serviceType) rows = rows.filter(r => r.serviceType === serviceType)
+  const rows = serviceType
+    ? db.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.serviceType, serviceType)).all()
+    : db.select().from(schema.aiServiceConfigs).all()
 
   const parsed = rows.map(r => ({
     ...toSnakeCase(r),

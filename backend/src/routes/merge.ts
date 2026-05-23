@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { eq, desc } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, badRequest } from '../utils/response.js'
 import { mergeEpisodeVideos } from '../services/ffmpeg-merge.js'
@@ -28,11 +28,12 @@ app.post('/episodes/:id/merge', async (c) => {
 // GET /episodes/:id/merge — 查询拼接状态
 app.get('/episodes/:id/merge', async (c) => {
   const episodeId = Number(c.req.param('id'))
-  const merges = db.select().from(schema.videoMerges)
+  const [latest] = db.select().from(schema.videoMerges)
     .where(eq(schema.videoMerges.episodeId, episodeId))
+    .orderBy(desc(schema.videoMerges.id))
+    .limit(1)
     .all()
 
-  const latest = merges[merges.length - 1]
   if (!latest) return success(c, null)
 
   return success(c, toSnakeCase(latest))

@@ -34,9 +34,23 @@ export class SiliconFlowImageAdapter implements ImageProviderAdapter {
       image_size: mapSfSize(record.size),
     }
 
+    if (record.seed != null) {
+      body.seed = record.seed
+    }
+
     if (record.referenceImages?.length) {
       const refs = JSON.parse(record.referenceImages)
-      if (Array.isArray(refs) && refs.length) body.image = refs[0]
+      if (Array.isArray(refs) && refs.length) {
+        body.image = refs[0]
+        body.strength = 0.3
+        const model = (record.model || config.model || '').toLowerCase()
+        if (model.includes('kolors')) {
+          body.guidance_scale = 12
+          body.negative_prompt = 'different face, different hairstyle, different clothing, different body type, different environment, different furniture, different props, text, words, letters, subtitles, watermark'
+        } else {
+          body.temperature = 0.3
+        }
+      }
     }
 
     return {

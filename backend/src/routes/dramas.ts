@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, isNull, like, desc, and } from 'drizzle-orm'
+import { eq, isNull, like, desc, and, inArray, sql } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, badRequest, notFound, created, now } from '../utils/response.js'
 import { toSnakeCase, toSnakeCaseArray } from '../utils/transform.js'
@@ -13,38 +13,64 @@ app.get('/', async (c) => {
   const status = c.req.query('status')
   const keyword = c.req.query('keyword')
 
-  let query = db.select().from(schema.dramas).where(isNull(schema.dramas.deletedAt))
+  // Build WHERE conditions in SQL instead of JS filtering
+  const conditions = [isNull(schema.dramas.deletedAt)]
+  if (status) conditions.push(eq(schema.dramas.status, status))
+  if (keyword) conditions.push(like(schema.dramas.title, `%${keyword}%`))
 
-  const allRows = await query.orderBy(desc(schema.dramas.updatedAt))
-  let filtered = allRows
+  const where = conditions.length > 1 ? and(...conditions) : conditions[0]
 
-  if (status) filtered = filtered.filter(d => d.status === status)
-  if (keyword) filtered = filtered.filter(d => d.title.includes(keyword))
+  // Count with SQL
+  const [{ count }] = db.select({ count: sql<number>`count(*)` })
+    .from(schema.dramas)
+    .where(where)
+    .all()
 
-  const total = filtered.length
-  const items = filtered.slice((page - 1) * pageSize, page * pageSize)
+  const items = db.select().from(schema.dramas)
+    .where(where)
+    .orderBy(desc(schema.dramas.updatedAt))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize)
+    .all()
 
-  // Attach episode/character/scene counts
-  const enriched = await Promise.all(items.map(async (drama) => {
-    const eps = await db.select().from(schema.episodes)
-      .where(eq(schema.episodes.dramaId, drama.id))
-    const chars = await db.select().from(schema.characters)
-      .where(and(eq(schema.characters.dramaId, drama.id), isNull(schema.characters.deletedAt)))
-    const scns = await db.select().from(schema.scenes)
-      .where(and(eq(schema.scenes.dramaId, drama.id), isNull(schema.scenes.deletedAt)))
-    return {
-      ...toSnakeCase(drama),
-      tags: drama.tags ? JSON.parse(drama.tags) : [],
-      total_episodes: eps.length,
-      episodes: toSnakeCaseArray(eps),
-      characters: toSnakeCaseArray(chars),
-      scenes: toSnakeCaseArray(scns),
-    }
+  // Batch query related data instead of N+1
+  const dramaIds = items.map(d => d.id)
+  const allEps = dramaIds.length ? db.select().from(schema.episodes)
+    .where(inArray(schema.episodes.dramaId, dramaIds)).all() : []
+  const allChars = dramaIds.length ? db.select().from(schema.characters)
+    .where(and(inArray(schema.characters.dramaId, dramaIds), isNull(schema.characters.deletedAt))).all() : []
+  const allScns = dramaIds.length ? db.select().from(schema.scenes)
+    .where(and(inArray(schema.scenes.dramaId, dramaIds), isNull(schema.scenes.deletedAt))).all() : []
+
+  // Group by dramaId in memory
+  const epsByDrama = new Map<number, typeof allEps>()
+  const charsByDrama = new Map<number, typeof allChars>()
+  const scnsByDrama = new Map<number, typeof allScns>()
+  for (const ep of allEps) {
+    if (!epsByDrama.has(ep.dramaId)) epsByDrama.set(ep.dramaId, [])
+    epsByDrama.get(ep.dramaId)!.push(ep)
+  }
+  for (const ch of allChars) {
+    if (!charsByDrama.has(ch.dramaId)) charsByDrama.set(ch.dramaId, [])
+    charsByDrama.get(ch.dramaId)!.push(ch)
+  }
+  for (const sc of allScns) {
+    if (!scnsByDrama.has(sc.dramaId)) scnsByDrama.set(sc.dramaId, [])
+    scnsByDrama.get(sc.dramaId)!.push(sc)
+  }
+
+  const enriched = items.map(drama => ({
+    ...toSnakeCase(drama),
+    tags: drama.tags ? JSON.parse(drama.tags) : [],
+    total_episodes: (epsByDrama.get(drama.id) || []).length,
+    episodes: toSnakeCaseArray(epsByDrama.get(drama.id) || []),
+    characters: toSnakeCaseArray(charsByDrama.get(drama.id) || []),
+    scenes: toSnakeCaseArray(scnsByDrama.get(drama.id) || []),
   }))
 
   return success(c, {
     items: enriched,
-    pagination: { page, page_size: pageSize, total, total_pages: Math.ceil(total / pageSize) },
+    pagination: { page, page_size: pageSize, total: count, total_pages: Math.ceil(count / pageSize) },
   })
 })
 
@@ -87,30 +113,36 @@ app.post('/', async (c) => {
 
 // GET /dramas/stats — must be before /:id
 app.get('/stats', async (c) => {
-  const all = db.select().from(schema.dramas).where(isNull(schema.dramas.deletedAt)).all()
-  const byStatus = Object.entries(
-    all.reduce((acc, d) => {
-      acc[d.status || 'draft'] = (acc[d.status || 'draft'] || 0) + 1
-      return acc
-    }, {} as Record<string, number>)
-  ).map(([status, count]) => ({ status, count }))
-  return success(c, { total: all.length, by_status: byStatus })
+  const [{ total }] = db.select({ total: sql<number>`count(*)` })
+    .from(schema.dramas)
+    .where(isNull(schema.dramas.deletedAt))
+    .all()
+  const byStatusRows = db.select({
+    status: schema.dramas.status,
+    count: sql<number>`count(*)`,
+  })
+    .from(schema.dramas)
+    .where(isNull(schema.dramas.deletedAt))
+    .groupBy(schema.dramas.status)
+    .all()
+  const by_status = byStatusRows.map(r => ({ status: r.status || 'draft', count: r.count }))
+  return success(c, { total, by_status })
 })
 
 // GET /dramas/:id - Get drama detail
 app.get('/:id', async (c) => {
   const id = Number(c.req.param('id'))
-  const [drama] = await db.select().from(schema.dramas).where(eq(schema.dramas.id, id))
+  const [drama] = db.select().from(schema.dramas).where(eq(schema.dramas.id, id)).all()
   if (!drama) return notFound(c, '剧本不存在')
 
-  const eps = await db.select().from(schema.episodes)
-    .where(eq(schema.episodes.dramaId, id))
-  const chars = await db.select().from(schema.characters)
-    .where(and(eq(schema.characters.dramaId, id), isNull(schema.characters.deletedAt)))
-  const scns = await db.select().from(schema.scenes)
-    .where(and(eq(schema.scenes.dramaId, id), isNull(schema.scenes.deletedAt)))
-  const prps = await db.select().from(schema.props)
-    .where(eq(schema.props.dramaId, id))
+  const eps = db.select().from(schema.episodes)
+    .where(eq(schema.episodes.dramaId, id)).all()
+  const chars = db.select().from(schema.characters)
+    .where(and(eq(schema.characters.dramaId, id), isNull(schema.characters.deletedAt))).all()
+  const scns = db.select().from(schema.scenes)
+    .where(and(eq(schema.scenes.dramaId, id), isNull(schema.scenes.deletedAt))).all()
+  const prps = db.select().from(schema.props)
+    .where(eq(schema.props.dramaId, id)).all()
 
   return success(c, {
     ...toSnakeCase(drama),
@@ -145,7 +177,7 @@ app.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const [existing] = db.select().from(schema.dramas).where(eq(schema.dramas.id, id)).all()
   if (!existing) return notFound(c, '剧本不存在')
-  await db.update(schema.dramas).set({ deletedAt: now() }).where(eq(schema.dramas.id, id))
+  db.update(schema.dramas).set({ deletedAt: now() }).where(eq(schema.dramas.id, id)).run()
   return success(c)
 })
 
@@ -158,9 +190,9 @@ app.put('/:id/characters', async (c) => {
 
   for (const char of chars) {
     if (char.id) {
-      await db.update(schema.characters).set({ ...char, updatedAt: ts }).where(eq(schema.characters.id, char.id))
+      db.update(schema.characters).set({ ...char, updatedAt: ts }).where(eq(schema.characters.id, char.id)).run()
     } else {
-      await db.insert(schema.characters).values({ ...char, dramaId, createdAt: ts, updatedAt: ts })
+      db.insert(schema.characters).values({ ...char, dramaId, createdAt: ts, updatedAt: ts }).run()
     }
   }
   return success(c)
@@ -175,16 +207,16 @@ app.put('/:id/episodes', async (c) => {
 
   for (const ep of episodes) {
     if (ep.id) {
-      await db.update(schema.episodes).set({ ...ep, updatedAt: ts }).where(eq(schema.episodes.id, ep.id))
+      db.update(schema.episodes).set({ ...ep, updatedAt: ts }).where(eq(schema.episodes.id, ep.id)).run()
     } else {
-      await db.insert(schema.episodes).values({
+      db.insert(schema.episodes).values({
         ...ep,
         dramaId,
         episodeNumber: ep.episode_number || ep.episodeNumber || 1,
         title: ep.title || '未命名',
         createdAt: ts,
         updatedAt: ts,
-      })
+      }).run()
     }
   }
   return success(c)

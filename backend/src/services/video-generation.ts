@@ -1,5 +1,5 @@
 import { db, schema } from '../db/index.js'
-import { eq } from 'drizzle-orm'
+import { eq, and, lt } from 'drizzle-orm'
 import { getActiveConfig, getConfigById } from './ai.js'
 import { now } from '../utils/response.js'
 import { downloadFile, readImageAsCompressedDataUrl } from '../utils/storage.js'
@@ -126,13 +126,12 @@ async function processVideoGeneration(id: number, config: AIConfig) {
       body: JSON.stringify(body),
     })
 
-    // 429 限流重试（指数退避，最多 4 次）
     if (resp.status === 429) {
-      const maxRetries = 4
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        const delay = Math.min(5000 * Math.pow(2, attempt - 1), 40000)
+      const delays = [20000, 40000, 80000]
+      for (let attempt = 0; attempt < delays.length; attempt++) {
+        const delay = delays[attempt]
         logTaskWarn('VideoTask', 'rate-limited', {
-          id, provider: config.provider, attempt, maxRetries, delay,
+          id, provider: config.provider, attempt: attempt + 1, maxRetries: delays.length, delay,
           error: await resp.text().catch(() => ''),
         })
         await new Promise(r => setTimeout(r, delay))
@@ -184,9 +183,9 @@ async function normalizeVideoReferenceUrl(value: string | null | undefined): Pro
     const localPath = raw.startsWith('/static/') ? raw.slice(1) : raw
     try {
       return await readImageAsCompressedDataUrl(localPath, {
-        maxWidth: 768,
-        maxHeight: 768,
-        quality: 68,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        quality: 90,
       })
     } catch (err) {
       logTaskWarn('VideoTask', 'reference-read-failed', { path: localPath, error: (err as Error).message })
@@ -269,4 +268,26 @@ async function handleVideoComplete(id: number, videoUrl: string, duration: numbe
       .where(eq(schema.storyboards.id, storyboardId))
       .run()
   }
+}
+
+export function recoverStuckVideoRecords() {
+  const cutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+  const stuck = db.select({ id: schema.videoGenerations.id })
+    .from(schema.videoGenerations)
+    .where(and(
+      eq(schema.videoGenerations.status, 'processing'),
+      lt(schema.videoGenerations.updatedAt, cutoff),
+    ))
+    .all()
+
+  if (!stuck.length) return
+
+  const ids = stuck.map(r => r.id)
+  for (const id of ids) {
+    db.update(schema.videoGenerations)
+      .set({ status: 'failed', errorMsg: 'Timeout: record stuck in processing for over 30 minutes', updatedAt: now() })
+      .where(eq(schema.videoGenerations.id, id))
+      .run()
+  }
+  console.log(`Recovered ${ids.length} stuck video records: [${ids.join(', ')}]`)
 }

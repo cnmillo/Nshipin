@@ -79,7 +79,7 @@ const DEFAULT_PROMPTS: Record<string, { name: string; instructions: string }> = 
 - time：时间段，应与 scenes 中已有时间保持一致
 - character_ids：当前镜头涉及的角色 ID 列表，可以为空，也可以包含多个角色；必须从 characters 中选择
 - action：角色动作与表演
-- dialogue：该镜头实际发生的对白或旁白；旁白可写为“旁白：内容”
+- dialogue：该镜头实际发生的对白或旁白；旁白可写为"旁白：内容"；多角色对话必须按角色分行，每行格式为"角色名：台词"，禁止将多角色台词写在同一行
 - description：镜头概述，用于前端阅读和镜头编辑
 - result：该镜头结束时的画面结果或状态变化
 - atmosphere：氛围、光线、色调、环境感受
@@ -161,7 +161,7 @@ const DEFAULT_PROMPTS: Record<string, { name: string; instructions: string }> = 
 - 宫格位置统一写成“格1/格2/...”，参考图统一写成“图片1/图片2/...”
 - 必须包含 "consistent art style" 保持风格统一
 - 必须包含 "cinematic quality"
-- 避免出现文字或水印
+- 必须包含 "no text, no words, no letters, no subtitles, no watermark" 禁止任何文字、字幕、水印出现在画面中
 - 角色图片强调外貌和气质，场景图片强调氛围和光线，宫格图片强调整体布局一致性`,
   },
 }

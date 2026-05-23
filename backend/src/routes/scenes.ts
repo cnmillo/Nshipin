@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { eq, and, inArray, isNull } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, created, badRequest, notFound, now } from '../utils/response.js'
+import { getStyleKeywords } from '../utils/transform.js'
 import { generateImage } from '../services/image-generation.js'
-import { applyStyleToImagePrompt, getDramaStyle } from '../services/style-prompts.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 
 const app = new Hono()
@@ -59,17 +59,20 @@ app.post('/:id/generate-image', async (c) => {
   let charContext = ''
   if (sbIds.length) {
     const sbChars = db.select().from(schema.storyboardCharacters)
-      .where(eq(schema.storyboardCharacters.storyboardId, sbIds[0]))
+      .where(inArray(schema.storyboardCharacters.storyboardId, sbIds))
       .all()
-    const charIds = sbChars.map(sc => sc.characterId)
+    const charIds = [...new Set(sbChars.map(sc => sc.characterId))]
     if (charIds.length) {
-      const chars = db.select().from(schema.characters)
-        .where(eq(schema.characters.id, charIds[0])).all()
-      if (chars.length) {
-        const ch = chars[0]
-        const genderHint = ch.gender || ''
-        const genderRef = genderHint === '女' || genderHint === '女声' ? 'female character' : genderHint === '男' || genderHint === '男声' ? 'male character' : 'character'
-        charContext = `This scene features character "${ch.name}" (${genderRef}${ch.appearance ? ', ' + ch.appearance : ''}). Character appearance must be consistent with their portrait image.`
+      const allChars = db.select().from(schema.characters)
+        .where(and(inArray(schema.characters.id, charIds), isNull(schema.characters.deletedAt)))
+        .all()
+      if (allChars.length) {
+        const charDescs = allChars.map(ch => {
+          const genderHint = ch.gender || ''
+          const genderRef = genderHint === '女' || genderHint === '女声' ? 'female' : genderHint === '男' || genderHint === '男声' ? 'male' : ''
+          return `"${ch.name}" (${genderRef}${ch.appearance ? ', ' + ch.appearance : ''})`
+        })
+        charContext = `Scene features characters: ${charDescs.join('; ')}. The scene atmosphere, lighting, and environment must match these characters' visual style and appearance.`
       }
     }
   }
@@ -77,19 +80,21 @@ app.post('/:id/generate-image', async (c) => {
   const location = scene.location || ''
   const time = scene.time || ''
   const userPrompt = scene.prompt || ''
+  const [drama] = db.select().from(schema.dramas).where(eq(schema.dramas.id, scene.dramaId)).all()
+  const dramaStyle = drama?.style || 'realistic'
+  const styleKeywords = getStyleKeywords(dramaStyle, 'scene')
   const basePrompt = `${location}${time ? ' at ' + time : ''}. A cinematic scene.`
   const characterRef = charContext
-    ? `${charContext}. Pure background scene, no characters or people in frame — characters described above should NOT appear in this image.`
+    ? `${charContext} The scene should visually complement these characters — the environment, color palette, and mood must be consistent with their appearance and style.`
     : `Pure background scene. No characters, no people, no figures.`
-  const prompt = userPrompt || `${basePrompt} ${characterRef} High quality, atmospheric lighting, consistent art style, no text, no watermark`
-
-  const dramaStyle = getDramaStyle(scene.dramaId)
-  const styledPrompt = applyStyleToImagePrompt(prompt, dramaStyle)
+  const prompt = userPrompt
+    ? `${userPrompt} ${styleKeywords}, logically coherent spatial layout, physically plausible lighting and perspective, high quality, consistent art style, no text, no watermark`
+    : `${basePrompt} ${characterRef} ${styleKeywords}, logically coherent spatial layout, physically plausible lighting and perspective, high quality, consistent art style, no text, no watermark`
 
   try {
-    logTaskStart('SceneImage', 'generate', { sceneId: id, episodeId: ep.id, dramaId: scene.dramaId, location: scene.location, hasCharContext: !!charContext, style: dramaStyle })
+    logTaskStart('SceneImage', 'generate', { sceneId: id, episodeId: ep.id, dramaId: scene.dramaId, location: scene.location, hasCharContext: !!charContext })
     db.update(schema.scenes).set({ status: 'processing', updatedAt: now() }).where(eq(schema.scenes.id, id)).run()
-    const genId = await generateImage({ sceneId: id, dramaId: scene.dramaId, prompt: styledPrompt, configId: ep.imageConfigId ?? undefined })
+    const genId = await generateImage({ sceneId: id, dramaId: scene.dramaId, prompt, configId: ep.imageConfigId ?? undefined })
     logTaskSuccess('SceneImage', 'generate', { sceneId: id, generationId: genId })
     return success(c, { image_generation_id: genId })
   } catch (err: any) {

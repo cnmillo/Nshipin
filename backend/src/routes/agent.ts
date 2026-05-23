@@ -53,10 +53,22 @@ app.post('/:type/chat', async (c) => {
   const startTime = performance.now()
 
   try {
-    const result = await agent.generate(
-      [{ role: 'user', content: message }],
-      { maxSteps: 20 },
-    )
+    // Agent 调用可能长时间无响应，加 3 分钟超时保护
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Agent 执行超时（3分钟），请检查 AI 服务是否正常')), 180_000)
+    })
+
+    const result = await Promise.race([
+      agent.generate(
+        [{ role: 'user', content: message }],
+        { maxSteps: 20 },
+      ),
+      timeoutPromise,
+    ])
+
+    // Agent 正常完成，清除超时定时器
+    if (timeoutId) clearTimeout(timeoutId)
 
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(1)
     logTaskSuccess('Agent', agentType, { elapsedSeconds: elapsed })

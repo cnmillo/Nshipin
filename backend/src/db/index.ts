@@ -358,7 +358,31 @@ function ensureColumn(table: string, column: string, definition: string) {
 ensureColumn('episodes', 'image_config_id', 'INTEGER')
 ensureColumn('episodes', 'video_config_id', 'INTEGER')
 ensureColumn('episodes', 'audio_config_id', 'INTEGER')
-ensureColumn('characters', 'gender', 'TEXT')
+
+// 性能关键索引
+const indexes = [
+  'CREATE INDEX IF NOT EXISTS idx_episodes_drama_id ON episodes (drama_id)',
+  'CREATE INDEX IF NOT EXISTS idx_characters_drama_id ON characters (drama_id)',
+  'CREATE INDEX IF NOT EXISTS idx_scenes_drama_id ON scenes (drama_id)',
+  'CREATE INDEX IF NOT EXISTS idx_storyboards_episode_id ON storyboards (episode_id)',
+  'CREATE INDEX IF NOT EXISTS idx_storyboards_scene_id ON storyboards (scene_id)',
+  'CREATE INDEX IF NOT EXISTS idx_image_generations_storyboard_id ON image_generations (storyboard_id)',
+  'CREATE INDEX IF NOT EXISTS idx_image_generations_drama_id ON image_generations (drama_id)',
+  'CREATE INDEX IF NOT EXISTS idx_image_generations_status ON image_generations (status)',
+  'CREATE INDEX IF NOT EXISTS idx_video_generations_storyboard_id ON video_generations (storyboard_id)',
+  'CREATE INDEX IF NOT EXISTS idx_video_generations_drama_id ON video_generations (drama_id)',
+  'CREATE INDEX IF NOT EXISTS idx_video_generations_task_id ON video_generations (task_id)',
+  'CREATE INDEX IF NOT EXISTS idx_video_generations_status ON video_generations (status)',
+  'CREATE INDEX IF NOT EXISTS idx_video_merges_episode_id ON video_merges (episode_id)',
+  'CREATE INDEX IF NOT EXISTS idx_ai_service_configs_service_type ON ai_service_configs (service_type)',
+  'CREATE INDEX IF NOT EXISTS idx_ai_service_configs_type_active ON ai_service_configs (service_type, is_active)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_configs_agent_type ON agent_configs (agent_type)',
+  'CREATE INDEX IF NOT EXISTS idx_ai_voices_provider ON ai_voices (provider)',
+  'CREATE INDEX IF NOT EXISTS idx_props_drama_id ON props (drama_id)',
+  'CREATE INDEX IF NOT EXISTS idx_characters_drama_id_deleted ON characters (drama_id, deleted_at)',
+  'CREATE INDEX IF NOT EXISTS idx_scenes_drama_id_deleted ON scenes (drama_id, deleted_at)',
+]
+for (const sql of indexes) sqlite.exec(sql)
 
 export const db = drizzle(sqlite, { schema })
 export { schema }
