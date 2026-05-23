@@ -1,0 +1,138 @@
+services:
+  huobao-drama:
+    build: .
+    ports:
+      - "5679:5679"
+    volumes:
+      - ./data:/app/data
+      - ./configs/config.yaml:/app/configs/config.yaml
+    environment:
+      - NODE_ENV=production
+      - PORT=5679
+      - COSYVOICE_URL=${COSYVOICE_URL:-http://cosyvoice:50000}
+    restart: unless-stopped
+
+  # CosyVoice2 TTS 服务
+  # 支持三种 GPU 模式，通过 --profile 选择：
+  #   AMD GPU:   docker compose --profile amd up
+  #   NVIDIA GPU: docker compose --profile nvidia up
+  #   CPU only:  docker compose --profile cpu up
+  # 默认不启动，需显式指定 profile
+
+  cosyvoice-amd:
+    image: rocm/pytorch:latest
+    profiles: ["amd"]
+    ports:
+      - "50000:50000"
+    volumes:
+      - cosyvoice-models:/opt/CosyVoice/pretrained_models
+    working_dir: /opt/CosyVoice
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-10.3.0}
+      - PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH:-gfx1030}
+      - PYTHONUNBUFFERED=1
+    entrypoint: >
+      bash -c "
+        if [ ! -f /opt/CosyVoice/cosyvoice/cli/cosyvoice.py ]; then
+          apt-get update && apt-get install -y git sox libsox-dev &&
+          git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice &&
+          cd /opt/CosyVoice &&
+          pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+        fi &&
+        cd /opt/CosyVoice &&
+        export PYTHONPATH=/opt/CosyVoice/third_party/Matcha-TTS:$$PYTHONPATH &&
+        if [ ! -d pretrained_models/CosyVoice2-0.5B ]; then
+          pip install modelscope &&
+          python3 -c \"from modelscope import snapshot_download; snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B')\"
+        fi &&
+        python3 runtime/python/fastapi/server.py --port 50000 --model_dir pretrained_models/CosyVoice2-0.5B
+      "
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+  cosyvoice-nvidia:
+    image: pytorch/pytorch:latest
+    profiles: ["nvidia"]
+    ports:
+      - "50000:50000"
+    volumes:
+      - cosyvoice-models:/opt/CosyVoice/pretrained_models
+    working_dir: /opt/CosyVoice
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
+    entrypoint: >
+      bash -c "
+        if [ ! -f /opt/CosyVoice/cosyvoice/cli/cosyvoice.py ]; then
+          apt-get update && apt-get install -y git sox libsox-dev &&
+          git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice &&
+          cd /opt/CosyVoice &&
+          pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+        fi &&
+        cd /opt/CosyVoice &&
+        export PYTHONPATH=/opt/CosyVoice/third_party/Matcha-TTS:$$PYTHONPATH &&
+        if [ ! -d pretrained_models/CosyVoice2-0.5B ]; then
+          pip install modelscope &&
+          python3 -c \"from modelscope import snapshot_download; snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B')\"
+        fi &&
+        python3 runtime/python/fastapi/server.py --port 50000 --model_dir pretrained_models/CosyVoice2-0.5B
+      "
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+  cosyvoice-cpu:
+    image: python:3.10-slim
+    profiles: ["cpu"]
+    ports:
+      - "50000:50000"
+    volumes:
+      - cosyvoice-models:/opt/CosyVoice/pretrained_models
+    working_dir: /opt/CosyVoice
+    environment:
+      - PYTHONUNBUFFERED=1
+    entrypoint: >
+      bash -c "
+        apt-get update && apt-get install -y git sox libsox-dev build-essential &&
+        if [ ! -f /opt/CosyVoice/cosyvoice/cli/cosyvoice.py ]; then
+          git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice &&
+          cd /opt/CosyVoice &&
+          pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+        fi &&
+        cd /opt/CosyVoice &&
+        export PYTHONPATH=/opt/CosyVoice/third_party/Matcha-TTS:$$PYTHONPATH &&
+        if [ ! -d pretrained_models/CosyVoice2-0.5B ]; then
+          pip install modelscope &&
+          python3 -c \"from modelscope import snapshot_download; snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B')\"
+        fi &&
+        python3 runtime/python/fastapi/server.py --port 50000 --model_dir pretrained_models/CosyVoice2-0.5B
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    restart: unless-stopped
+
+volumes:
+  cosyvoice-models:

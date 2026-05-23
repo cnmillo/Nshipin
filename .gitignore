@@ -1,0 +1,71 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (database and uploaded files)
+data/drama_generator.db
+data/drama_generator.db-wal
+data/drama_generator.db-shm
+data/huobao_drama.db
+data/huobao_drama.db-wal
+data/huobao_drama.db-shm
+data/public.sql
+data/*.bak*
+data/static/
+data/storage/
+
+# Config
+configs/config.yaml
+
+# Misc
+tmp/
+temp/
+.superpowers/
+/CLAUDE.md
+/AGENTS.md
+
+# Test artifacts
+test_results/
+test_screenshots/
+
+# Binary archives
+bin/ffmpeg.zip
+*.7z
+
+# CosyVoice model data
+cosyvoice-models/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Frontend
+frontend/.nuxt/
+frontend/.output/
+
+# Backend compiled
+backend/dist/
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
