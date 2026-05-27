@@ -51,30 +51,62 @@ function supportsSubtitleFilter(): boolean {
   return subtitleFilterSupport
 }
 
+function extractEmotion(text: string): { emotion: string | null; cleanText: string } {
+  const emotionPatterns = [
+    /[【]([^】]+)[】]/,
+    /[（(]([^)）]*(?:愤怒|生气|咆哮|怒吼|大喊|尖叫|悲伤|哭泣|哭诉|哽咽|抽泣|开心|高兴|兴奋|激动|欢笑|大笑|恐惧|害怕|惊恐|紧张|焦虑|温柔|轻声|低语|耳语|冷漠|冷淡|平静|沉思|犹豫|坚定|果断|惊讶|震惊|嘲讽|讽刺|撒娇|委屈|疲惫|叹息|叹气|急切|催促|警告|威胁|安慰|鼓励|感激|道歉|无奈|轻蔑|不屑|得意|骄傲|害羞|尴尬|痛苦|呻吟|喘息|微笑|冷笑|苦笑|微笑着|哭着|喊道|吼道|低声|大声|轻声|颤声|哽咽着|叹道|笑道)[^)）]*)[)）]/,
+  ]
+  for (const pattern of emotionPatterns) {
+    const match = text.match(pattern)
+    if (match) {
+      const emotionText = match[1].trim()
+      const cleanText = text.replace(pattern, '').trim()
+      const emotionKeywords = ['愤怒','生气','咆哮','怒吼','大喊','尖叫','悲伤','哭泣','哭诉','哽咽','抽泣','开心','高兴','兴奋','激动','欢笑','大笑','恐惧','害怕','惊恐','紧张','焦虑','温柔','轻声','低语','耳语','冷漠','冷淡','平静','沉思','犹豫','坚定','果断','惊讶','震惊','嘲讽','讽刺','撒娇','委屈','疲惫','叹息','叹气','急切','催促','警告','威胁','安慰','鼓励','感激','道歉','无奈','轻蔑','不屑','得意','骄傲','害羞','尴尬','痛苦','呻吟','喘息']
+      for (const kw of emotionKeywords) {
+        if (emotionText.includes(kw)) return { emotion: kw, cleanText }
+      }
+      if (emotionText.includes('微笑') || emotionText.includes('笑')) return { emotion: '开心', cleanText }
+      if (emotionText.includes('哭')) return { emotion: '悲伤', cleanText }
+      if (emotionText.includes('喊') || emotionText.includes('叫')) return { emotion: '大喊', cleanText }
+      if (emotionText.includes('吼')) return { emotion: '怒吼', cleanText }
+      if (emotionText.includes('低声') || emotionText.includes('小声')) return { emotion: '轻声', cleanText }
+      if (emotionText.includes('颤')) return { emotion: '紧张', cleanText }
+    }
+  }
+  return { emotion: null, cleanText: text }
+}
+
 function parseDialogueForTTS(dialogue?: string | null) {
   const raw = dialogue?.trim() || ''
-  if (!raw) return { speaker: '', pureText: '', ignorable: true }
+  if (!raw) return { speaker: '', pureText: '', emotion: null as string | null, ignorable: true }
   const pattern = /([^：:]+?)[：:]\s*([^：:]*?)(?=\s+[^：:]+?[：:]|$)/g
-  const segments: { speaker: string; text: string }[] = []
+  const segments: { speaker: string; text: string; emotion: string | null }[] = []
   let match: RegExpExecArray | null
   while ((match = pattern.exec(raw)) !== null) {
-    const speaker = match[1].replace(/[（(].+?[)）]/g, '').trim()
-    const text = match[2].replace(/[（(].+?[)）]/g, '').trim()
-    if (speaker && text) segments.push({ speaker, text })
+    const rawSpeaker = match[1].trim()
+    const rawText = match[2].trim()
+    const { emotion: speakerEmotion, cleanText: cleanSpeaker } = extractEmotion(rawSpeaker)
+    const { emotion: textEmotion, cleanText: cleanText } = extractEmotion(rawText)
+    const speaker = cleanSpeaker.replace(/[（(].+?[)）]/g, '').trim()
+    const text = cleanText.replace(/[（(].+?[)）]/g, '').trim()
+    const emotion = textEmotion || speakerEmotion
+    if (speaker && text) segments.push({ speaker, text, emotion })
   }
   if (segments.length === 0) {
-    const pureText = raw.replace(/[（(].+?[)）]/g, '').trim()
-    if (!pureText || IGNORE_TTS_TEXT.test(pureText)) return { speaker: '', pureText: '', ignorable: true }
-    return { speaker: '', pureText, ignorable: false }
+    const { emotion, cleanText } = extractEmotion(raw)
+    const pureText = cleanText.replace(/[（(].+?[)）]/g, '').trim()
+    if (!pureText || IGNORE_TTS_TEXT.test(pureText)) return { speaker: '', pureText: '', emotion: null, ignorable: true }
+    return { speaker: '', pureText, emotion, ignorable: false }
   }
   const firstSpeaker = segments[0].speaker
   if (IGNORE_TTS_SPEAKERS.test(firstSpeaker)) {
     const nonIgnored = segments.find(s => !IGNORE_TTS_SPEAKERS.test(s.speaker))
-    if (!nonIgnored) return { speaker: '', pureText: '', ignorable: true }
+    if (!nonIgnored) return { speaker: '', pureText: '', emotion: null, ignorable: true }
   }
   const pureText = segments.map(s => s.text).join(' ')
+  const emotion = segments[0].emotion
   const ignorable = !pureText || IGNORE_TTS_TEXT.test(pureText)
-  return { speaker: firstSpeaker, pureText, ignorable }
+  return { speaker: firstSpeaker, pureText, emotion, ignorable }
 }
 
 function probeDuration(filePath: string): Promise<number> {
@@ -208,12 +240,13 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
 
         const pureDialogue = parsedDialogue.pureText
         if (pureDialogue) {
-          logTaskProgress('ComposeTask', 'generate-inline-tts', { storyboardId, voiceId, voiceProvider, textPreview: pureDialogue.slice(0, 40) })
+          logTaskProgress('ComposeTask', 'generate-inline-tts', { storyboardId, voiceId, voiceProvider, emotion: parsedDialogue.emotion, textPreview: pureDialogue.slice(0, 40) })
           const ttsResult = await generateTTSWithMetadata({
             text: pureDialogue,
             voice: voiceId,
             configId: ep?.audioConfigId ?? undefined,
             voiceProvider,
+            emotion: parsedDialogue.emotion || undefined,
           })
           audioPath = toAbsPath(ttsResult.relativePath)
           audioDurationMs = ttsResult.audioDurationMs
