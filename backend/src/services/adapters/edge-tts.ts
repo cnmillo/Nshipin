@@ -17,18 +17,32 @@ const WSS_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.9',
 }
 
+export interface WordBoundary {
+  text: string
+  offsetMs: number
+  durationMs: number
+}
+
+export interface EdgeTTSResult {
+  buffer: Buffer
+  format: string
+  wordBoundaries: WordBoundary[]
+  audioDurationMs: number
+}
+
 function getSynthUrl(): string {
   const param = generateSecMSGecParam(TRUSTED_CLIENT_TOKEN)
   return `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}${param}`.replace(/1-130\.0\.2849\.68/, `1-${CHROMIUM_VERSION}.0.2849.68`)
 }
 
-function synthesize(text: string, voice: string, rate?: string, pitch?: string): Promise<Buffer> {
+function synthesize(text: string, voice: string, rate?: string, pitch?: string): Promise<EdgeTTSResult> {
   return new Promise((resolve, reject) => {
     const voiceLocale = voice.match(/\w{2}-\w{2}/)?.[0] || 'zh-CN'
     const url = getSynthUrl()
     const ws = new WebSocket(url, { headers: WSS_HEADERS } as any)
 
     const audioChunks: Buffer[] = []
+    const wordBoundaries: WordBoundary[] = []
     let settled = false
 
     function done(err?: Error) {
@@ -38,11 +52,18 @@ function synthesize(text: string, voice: string, rate?: string, pitch?: string):
       if (err) return reject(err)
       const total = Buffer.concat(audioChunks)
       if (total.length === 0) return reject(new Error('未收到音频数据'))
-      resolve(total)
+
+      let audioDurationMs = 0
+      if (wordBoundaries.length > 0) {
+        const last = wordBoundaries[wordBoundaries.length - 1]
+        audioDurationMs = last.offsetMs + last.durationMs
+      }
+
+      resolve({ buffer: total, format: 'mp3', wordBoundaries, audioDurationMs })
     }
 
     ws.on('open', () => {
-      const configMsg = `Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"${OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3}"}}}}`
+      const configMsg = `Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"true","wordBoundaryEnabled":"true"},"outputFormat":"${OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3}"}}}}`
       ws.send(configMsg)
 
       const requestId = randomUUID().replace(/-/g, '')
@@ -77,6 +98,32 @@ function synthesize(text: string, voice: string, rate?: string, pitch?: string):
         }
       } else if (headerStr.includes('Path:turn.end')) {
         done()
+      } else if (headerStr.includes('Path:response')) {
+        // skip
+      } else {
+        const textContent = data.subarray(2).toString('utf8')
+        const boundaryMatch = textContent.match(/Path:word\.boundary/)
+        if (boundaryMatch) {
+          try {
+            const jsonMatch = textContent.match(/\{[^}]+\}/g)
+            if (jsonMatch) {
+              for (const jsonStr of jsonMatch) {
+                try {
+                  const obj = JSON.parse(jsonStr)
+                  if (obj.type === 'WordBoundary') {
+                    const offsetMs = Math.round((obj.offset || 0) / 10000)
+                    const durationMs = Math.round((obj.duration || 0) / 10000)
+                    wordBoundaries.push({
+                      text: obj.text || '',
+                      offsetMs,
+                      durationMs,
+                    })
+                  }
+                } catch {}
+              }
+            }
+          } catch {}
+        }
       }
     })
 
@@ -116,7 +163,14 @@ export class EdgeTTSAdapter implements TTSProviderAdapter {
     const voice = params.voice || 'zh-CN-XiaoxiaoNeural'
     const rate = params.speed ? `${params.speed > 1 ? '+' : ''}${Math.round((params.speed - 1) * 100)}%` : '+0%'
     const pitch = params.pitch || '+0Hz'
-    const buffer = await synthesize(params.text, voice, rate, pitch)
-    return { buffer, format: 'mp3' }
+    const result = await synthesize(params.text, voice, rate, pitch)
+    return { buffer: result.buffer, format: result.format }
+  }
+
+  async generateDirectWithTimestamps(params: any): Promise<EdgeTTSResult> {
+    const voice = params.voice || 'zh-CN-XiaoxiaoNeural'
+    const rate = params.speed ? `${params.speed > 1 ? '+' : ''}${Math.round((params.speed - 1) * 100)}%` : '+0%'
+    const pitch = params.pitch || '+0Hz'
+    return synthesize(params.text, voice, rate, pitch)
   }
 }

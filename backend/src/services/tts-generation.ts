@@ -1,13 +1,11 @@
-/**
- * TTS 语音合成服务
- * 支持 MiniMax TTS (hex 音频响应) 和 OpenAI 兼容 /audio/speech
- */
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { v4 as uuid } from 'uuid'
 import { getAudioConfigById, getActiveConfig } from './ai.js'
 import { getTTSAdapter } from './adapters/registry.js'
+import { EdgeTTSAdapter } from './adapters/edge-tts.js'
+import type { WordBoundary } from './adapters/edge-tts.js'
 import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, logTaskSuccess, logTaskWarn, redactUrl } from '../utils/task-logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -47,7 +45,7 @@ function mapToEdgeVoice(voice: string): string {
   return VOICE_TO_EDGE[voice] || 'zh-CN-XiaoxiaoNeural'
 }
 
-interface TTSParams {
+export interface TTSParams {
   text: string
   voice: string
   model?: string
@@ -57,16 +55,17 @@ interface TTSParams {
   voiceProvider?: string | null
 }
 
-/**
- * 生成 TTS 音频，返回本地文件路径
- */
-export async function generateTTS(params: TTSParams): Promise<string> {
+export interface TTSResult {
+  relativePath: string
+  audioDurationMs: number
+  wordBoundaries: WordBoundary[]
+}
+
+function resolveConfig(params: TTSParams) {
   let config = getAudioConfigById(params.configId)
 
-  // 自动检测 Edge TTS 音色
   const isEdgeVoice = isEdgeTTSVoice(params.voice)
   if (isEdgeVoice && config.provider !== 'edge-tts') {
-    // 尝试获取 Edge TTS 配置
     const edgeConfig = getActiveConfig('audio')
     if (edgeConfig && edgeConfig.provider === 'edge-tts') {
       logTaskWarn('AudioTask', 'auto-switch-to-edge', {
@@ -77,7 +76,6 @@ export async function generateTTS(params: TTSParams): Promise<string> {
       config = edgeConfig
     } else if (params.voiceProvider === 'edge-tts') {
       logTaskWarn('AudioTask', 'force-edge-no-config', { voice: params.voice })
-      // 直接使用 Edge TTS（不需要完整配置）
       config = {
         provider: 'edge-tts',
         baseUrl: '',
@@ -108,7 +106,6 @@ export async function generateTTS(params: TTSParams): Promise<string> {
     }
   }
 
-  // 当配置是 Edge TTS 但音色无效时，自动替换为默认音色
   let effectiveVoice = params.voice
   if (config.provider === 'edge-tts' && !isEdgeTTSVoice(params.voice)) {
     effectiveVoice = mapToEdgeVoice(params.voice)
@@ -119,6 +116,16 @@ export async function generateTTS(params: TTSParams): Promise<string> {
     })
   }
 
+  return { config, effectiveVoice }
+}
+
+export async function generateTTS(params: TTSParams): Promise<string> {
+  const result = await generateTTSWithMetadata(params)
+  return result.relativePath
+}
+
+export async function generateTTSWithMetadata(params: TTSParams): Promise<TTSResult> {
+  const { config, effectiveVoice } = resolveConfig(params)
   const adapter = getTTSAdapter(config.provider)
 
   logTaskStart('AudioTask', 'tts-generate', {
@@ -134,8 +141,18 @@ export async function generateTTS(params: TTSParams): Promise<string> {
 
   let buffer: Buffer
   let format = 'mp3'
+  let wordBoundaries: WordBoundary[] = []
+  let audioDurationMs = 0
 
-  if (adapter.generateDirect) {
+  if (adapter instanceof EdgeTTSAdapter) {
+    logTaskProgress('AudioTask', 'generate-with-timestamps', { provider: config.provider, voice: effectiveVoice })
+    const directParams: any = { ...params, voice: effectiveVoice }
+    const edgeResult = await adapter.generateDirectWithTimestamps(directParams)
+    buffer = edgeResult.buffer
+    format = edgeResult.format || 'mp3'
+    wordBoundaries = edgeResult.wordBoundaries
+    audioDurationMs = edgeResult.audioDurationMs
+  } else if (adapter.generateDirect) {
     logTaskProgress('AudioTask', 'generate-direct', { provider: config.provider, voice: effectiveVoice })
     const directParams: any = { ...params, voice: effectiveVoice }
     if (config.provider === 'cosyvoice') {
@@ -189,18 +206,35 @@ export async function generateTTS(params: TTSParams): Promise<string> {
   fs.writeFileSync(filePath, buffer)
 
   const relativePath = `static/audio/${filename}`
+
+  if (audioDurationMs === 0 && buffer.length > 0) {
+    audioDurationMs = estimateAudioDurationMs(buffer, format)
+  }
+
   logTaskSuccess('AudioTask', 'tts-saved', {
     provider: config.provider,
     voice: effectiveVoice,
     path: relativePath,
     bytes: buffer.length,
+    audioDurationMs,
+    wordBoundaries: wordBoundaries.length,
   })
-  return relativePath
+
+  return { relativePath, audioDurationMs, wordBoundaries }
 }
 
-/**
- * 为角色生成试听音频
- */
+function estimateAudioDurationMs(buffer: Buffer, format: string): number {
+  if (format === 'mp3') {
+    const bitrateKbps = 48
+    return Math.round((buffer.length * 8) / (bitrateKbps * 1000) * 1000)
+  }
+  if (format === 'wav') {
+    const bytesPerSec = 48000 * 2 * 2
+    return Math.round((buffer.length / bytesPerSec) * 1000)
+  }
+  return 0
+}
+
 export async function generateVoiceSample(
   characterName: string,
   voiceId: string,

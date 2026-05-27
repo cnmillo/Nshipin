@@ -1,6 +1,3 @@
-/**
- * FFmpeg 单镜头合成 — 视频 + TTS音频 + 烧录字幕
- */
 import ffmpeg from 'fluent-ffmpeg'
 import fs from 'fs'
 import path from 'path'
@@ -11,8 +8,9 @@ import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { now } from '../utils/response.js'
 import { findFfmpeg } from '../utils/ffmpeg-path.js'
-import { generateTTS } from './tts-generation.js'
-import { logTaskError, logTaskProgress, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
+import { generateTTSWithMetadata } from './tts-generation.js'
+import type { WordBoundary } from './adapters/edge-tts.js'
+import { logTaskError, logTaskProgress, logTaskStart, logTaskSuccess, logTaskWarn } from '../utils/task-logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const STORAGE_ROOT = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../data/static')
@@ -23,6 +21,10 @@ ffmpeg.setFfmpegPath(FFMPEG_PATH)
 let subtitleFilterSupport: boolean | null = null
 const IGNORE_TTS_SPEAKERS = /^(环境音|环境声|音效|效果音|sfx|sound ?effect|bgm|背景音|背景音乐|ambient)$/i
 const IGNORE_TTS_TEXT = /^(无|无对白|无台词|无旁白|无需配音|无需对白|none|null|n\/a|na|环境音|环境声|音效|效果音|纯音效|纯环境音|只有环境音|仅环境音|背景音|背景音乐|bgm|sfx|ambient)$/i
+
+const SPEED_ADJUST_THRESHOLD = 0.3
+const SPEED_MIN = 0.7
+const SPEED_MAX = 1.5
 
 function fmtSrtTime(sec: number): string {
   const h = Math.floor(sec / 3600)
@@ -52,7 +54,6 @@ function supportsSubtitleFilter(): boolean {
 function parseDialogueForTTS(dialogue?: string | null) {
   const raw = dialogue?.trim() || ''
   if (!raw) return { speaker: '', pureText: '', ignorable: true }
-  // 尝试按 "角色名：台词" 模式拆分多角色对白
   const pattern = /([^：:]+?)[：:]\s*([^：:]*?)(?=\s+[^：:]+?[：:]|$)/g
   const segments: { speaker: string; text: string }[] = []
   let match: RegExpExecArray | null
@@ -66,7 +67,6 @@ function parseDialogueForTTS(dialogue?: string | null) {
     if (!pureText || IGNORE_TTS_TEXT.test(pureText)) return { speaker: '', pureText: '', ignorable: true }
     return { speaker: '', pureText, ignorable: false }
   }
-  // 多角色时，pureText 为全部台词拼接（用于字幕），speaker 为第一个说话人（用于回退音色查找）
   const firstSpeaker = segments[0].speaker
   if (IGNORE_TTS_SPEAKERS.test(firstSpeaker)) {
     const nonIgnored = segments.find(s => !IGNORE_TTS_SPEAKERS.test(s.speaker))
@@ -77,9 +77,79 @@ function parseDialogueForTTS(dialogue?: string | null) {
   return { speaker: firstSpeaker, pureText, ignorable }
 }
 
-/**
- * 合成单个镜头：视频 + TTS对白音频 + 烧录字幕
- */
+function probeDuration(filePath: string): Promise<number> {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, meta) => {
+      if (err || !meta.format?.duration) resolve(0)
+      else resolve(Math.round(meta.format.duration * 1000) / 1000)
+    })
+  })
+}
+
+function generateSrtFromWordBoundaries(
+  wordBoundaries: WordBoundary[],
+  pureText: string,
+  totalDurationSec: number
+): string {
+  if (wordBoundaries.length > 0) {
+    const CHARS_PER_CUE = 10
+    const cues: { startMs: number; endMs: number; text: string }[] = []
+    let currentCueText = ''
+    let currentCueStartMs = wordBoundaries[0].offsetMs
+    let currentCueEndMs = 0
+
+    for (let i = 0; i < wordBoundaries.length; i++) {
+      const wb = wordBoundaries[i]
+      currentCueText += wb.text
+      currentCueEndMs = wb.offsetMs + wb.durationMs
+
+      if (currentCueText.length >= CHARS_PER_CUE || i === wordBoundaries.length - 1) {
+        cues.push({
+          startMs: currentCueStartMs,
+          endMs: currentCueEndMs,
+          text: currentCueText,
+        })
+        currentCueText = ''
+        if (i < wordBoundaries.length - 1) {
+          currentCueStartMs = wordBoundaries[i + 1].offsetMs
+        }
+      }
+    }
+
+    const srtLines: string[] = []
+    for (let i = 0; i < cues.length; i++) {
+      const cue = cues[i]
+      srtLines.push(`${i + 1}`)
+      srtLines.push(`${fmtSrtTime(cue.startMs / 1000)} --> ${fmtSrtTime(cue.endMs / 1000)}`)
+      srtLines.push(cue.text)
+      srtLines.push('')
+    }
+    return srtLines.join('\n')
+  }
+
+  return generateSrtEvenSplit(pureText, totalDurationSec)
+}
+
+function generateSrtEvenSplit(pureText: string, totalDurationSec: number): string {
+  const CHARS_PER_SEGMENT = 12
+  const segments: string[] = []
+  for (let i = 0; i < pureText.length; i += CHARS_PER_SEGMENT) {
+    segments.push(pureText.slice(i, i + CHARS_PER_SEGMENT))
+  }
+  const totalSec = Math.max(totalDurationSec, 1)
+  const segDuration = totalSec / segments.length
+  const srtLines: string[] = []
+  for (let i = 0; i < segments.length; i++) {
+    const startSec = i * segDuration
+    const endSec = Math.min((i + 1) * segDuration, totalSec)
+    srtLines.push(`${i + 1}`)
+    srtLines.push(`${fmtSrtTime(startSec)} --> ${fmtSrtTime(endSec)}`)
+    srtLines.push(segments[i])
+    srtLines.push('')
+  }
+  return srtLines.join('\n')
+}
+
 export async function composeStoryboard(storyboardId: number): Promise<string> {
   const [sb] = db.select().from(schema.storyboards).where(eq(schema.storyboards.id, storyboardId)).all()
   if (!sb) throw new Error(`Storyboard ${storyboardId} not found`)
@@ -98,10 +168,12 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
   const videoPath = toAbsPath(sb.videoUrl)
   let audioPath: string | null = null
   let subtitlePath: string | null = null
+  let audioDurationMs = 0
+  let wordBoundaries: WordBoundary[] = []
   const parsedDialogue = parseDialogueForTTS(sb.dialogue)
 
-  // 1. 生成 TTS 音频（如果有对白）
   try {
+    // ── Phase 1: 生成 TTS 音频（音频优先） ──
     if (!parsedDialogue.ignorable) {
       if (sb.ttsAudioUrl) {
         const existingAudioPath = toAbsPath(sb.ttsAudioUrl)
@@ -125,7 +197,6 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
           }
         }
 
-        // 自动处理 Edge TTS 音色的默认值
         if (voiceProvider === 'edge-tts' && voiceId === 'alloy') {
           voiceId = 'zh-CN-XiaoxiaoNeural'
         } else if (ep?.audioConfigId) {
@@ -138,58 +209,123 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
         const pureDialogue = parsedDialogue.pureText
         if (pureDialogue) {
           logTaskProgress('ComposeTask', 'generate-inline-tts', { storyboardId, voiceId, voiceProvider, textPreview: pureDialogue.slice(0, 40) })
-          const ttsPath = await generateTTS({ text: pureDialogue, voice: voiceId, configId: ep?.audioConfigId ?? undefined, voiceProvider })
-          audioPath = toAbsPath(ttsPath)
-          db.update(schema.storyboards).set({ ttsAudioUrl: ttsPath, updatedAt: now() })
-            .where(eq(schema.storyboards.id, storyboardId)).run()
+          const ttsResult = await generateTTSWithMetadata({
+            text: pureDialogue,
+            voice: voiceId,
+            configId: ep?.audioConfigId ?? undefined,
+            voiceProvider,
+          })
+          audioPath = toAbsPath(ttsResult.relativePath)
+          audioDurationMs = ttsResult.audioDurationMs
+          wordBoundaries = ttsResult.wordBoundaries
+
+          db.update(schema.storyboards).set({
+            ttsAudioUrl: ttsResult.relativePath,
+            ttsAudioDuration: audioDurationMs > 0 ? Math.round(audioDurationMs / 1000) : null,
+            updatedAt: now(),
+          }).where(eq(schema.storyboards.id, storyboardId)).run()
+
+          logTaskProgress('ComposeTask', 'tts-duration', {
+            storyboardId,
+            audioDurationMs,
+            wordBoundaries: wordBoundaries.length,
+          })
+        }
+      } else {
+        const probedAudioDuration = await probeDuration(audioPath)
+        if (probedAudioDuration > 0) {
+          audioDurationMs = probedAudioDuration * 1000
         }
       }
     }
 
-    // 2. 生成字幕文件（SRT）
+    // ── Phase 2: 获取视频时长 ──
+    let videoDurationSec = sb.duration || 10
+    const probedVideoDuration = await probeDuration(videoPath)
+    if (probedVideoDuration > 0) {
+      videoDurationSec = probedVideoDuration
+    }
+
+    // ── Phase 3: 计算音画同步策略 ──
+    let targetDurationSec = videoDurationSec
+    let videoSpeed = 1.0
+    let audioSpeed = 1.0
+
+    if (audioDurationMs > 0) {
+      const audioDurationSec = audioDurationMs / 1000
+      const ratio = videoDurationSec / audioDurationSec
+
+      if (ratio >= (1 - SPEED_ADJUST_THRESHOLD) && ratio <= (1 + SPEED_ADJUST_THRESHOLD)) {
+        const speedFactor = videoDurationSec / audioDurationSec
+        if (speedFactor >= SPEED_MIN && speedFactor <= SPEED_MAX) {
+          videoSpeed = speedFactor
+          targetDurationSec = audioDurationSec
+          logTaskProgress('ComposeTask', 'sync-adjust-video-speed', {
+            storyboardId,
+            videoDurationSec,
+            audioDurationSec,
+            videoSpeed: videoSpeed.toFixed(3),
+            strategy: 'video-adapts-to-audio',
+          })
+        } else {
+          targetDurationSec = audioDurationSec
+          logTaskProgress('ComposeTask', 'sync-no-adjust', {
+            storyboardId,
+            videoDurationSec,
+            audioDurationSec,
+            ratio: ratio.toFixed(2),
+            reason: 'speed out of range, use audio duration as target',
+          })
+        }
+      } else if (ratio > 1 + SPEED_ADJUST_THRESHOLD) {
+        targetDurationSec = audioDurationSec
+        logTaskProgress('ComposeTask', 'sync-trim-video', {
+          storyboardId,
+          videoDurationSec,
+          audioDurationSec,
+          strategy: 'video-too-long-trim-to-audio',
+        })
+      } else {
+        const speedFactor = audioDurationSec / videoDurationSec
+        if (speedFactor <= SPEED_MAX) {
+          videoSpeed = 1 / speedFactor
+          targetDurationSec = videoDurationSec * videoSpeed
+          logTaskProgress('ComposeTask', 'sync-speed-up-video', {
+            storyboardId,
+            videoDurationSec,
+            audioDurationSec,
+            videoSpeed: videoSpeed.toFixed(3),
+            strategy: 'audio-too-long-speed-up-video',
+          })
+        } else {
+          targetDurationSec = audioDurationSec
+          logTaskProgress('ComposeTask', 'sync-audio-too-long', {
+            storyboardId,
+            videoDurationSec,
+            audioDurationSec,
+            strategy: 'audio-much-longer-use-audio-duration',
+          })
+        }
+      }
+    }
+
+    // ── Phase 4: 生成字幕文件（SRT）──
     if (!parsedDialogue.ignorable) {
       const srtDir = path.join(STORAGE_ROOT, 'subtitles')
       fs.mkdirSync(srtDir, { recursive: true })
       const srtFilename = `${uuid()}.srt`
       subtitlePath = path.join(srtDir, srtFilename)
 
-      let actualDuration = sb.duration || 10
-      try {
-        const probeData = await new Promise<number>((resolve) => {
-          ffmpeg.ffprobe(videoPath, (err, meta) => {
-            if (err || !meta.format?.duration) resolve(actualDuration)
-            else resolve(Math.round(meta.format.duration * 10) / 10)
-          })
-        })
-        actualDuration = probeData
-      } catch {}
-
       const pureText = parsedDialogue.pureText
-      const CHARS_PER_SEGMENT = 12
-      const segments: string[] = []
-      for (let i = 0; i < pureText.length; i += CHARS_PER_SEGMENT) {
-        segments.push(pureText.slice(i, i + CHARS_PER_SEGMENT))
-      }
-
-      const totalSec = Math.max(actualDuration, 1)
-      const segDuration = totalSec / segments.length
-      const srtLines: string[] = []
-      for (let i = 0; i < segments.length; i++) {
-        const startSec = i * segDuration
-        const endSec = Math.min((i + 1) * segDuration, totalSec)
-        srtLines.push(`${i + 1}`)
-        srtLines.push(`${fmtSrtTime(startSec)} --> ${fmtSrtTime(endSec)}`)
-        srtLines.push(segments[i])
-        srtLines.push('')
-      }
-      fs.writeFileSync(subtitlePath, srtLines.join('\n'), 'utf-8')
+      const srtContent = generateSrtFromWordBoundaries(wordBoundaries, pureText, targetDurationSec)
+      fs.writeFileSync(subtitlePath, srtContent, 'utf-8')
 
       const srtRelative = `static/subtitles/${srtFilename}`
       db.update(schema.storyboards).set({ subtitleUrl: srtRelative, updatedAt: now() })
         .where(eq(schema.storyboards.id, storyboardId)).run()
     }
 
-    // 3. FFmpeg 合成
+    // ── Phase 5: FFmpeg 合成（音画同步） ──
     const outputDir = path.join(STORAGE_ROOT, 'composed')
     fs.mkdirSync(outputDir, { recursive: true })
     const outputFilename = `${uuid()}.mp4`
@@ -198,8 +334,16 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
     await new Promise<void>((resolve, reject) => {
       let cmd = ffmpeg(videoPath)
 
+      if (videoSpeed !== 1.0) {
+        const setpts = 1 / videoSpeed
+        cmd = cmd.videoFilter(`setpts=${setpts.toFixed(6)}*PTS`)
+      }
+
       if (audioPath) {
         cmd = cmd.input(audioPath)
+        if (audioSpeed !== 1.0) {
+          cmd = cmd.audioFilter(`atempo=${audioSpeed.toFixed(3)}`)
+        }
       } else {
         cmd = cmd.input('anullsrc=channel_layout=stereo:sample_rate=48000')
         cmd = cmd.inputOptions(['-f', 'lavfi'])
@@ -222,10 +366,37 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
       }
 
       if (filters.length > 0) {
-        cmd = cmd.videoFilter(filters)
+        if (videoSpeed !== 1.0) {
+          const setpts = 1 / videoSpeed
+          filters.unshift(`setpts=${setpts.toFixed(6)}*PTS`)
+          cmd = ffmpeg(videoPath)
+          if (audioPath) {
+            cmd = cmd.input(audioPath)
+          } else {
+            cmd = cmd.input('anullsrc=channel_layout=stereo:sample_rate=48000')
+            cmd = cmd.inputOptions(['-f', 'lavfi'])
+          }
+          cmd = cmd.videoFilter(filters.join(','))
+        } else {
+          cmd = cmd.videoFilter(filters)
+        }
       }
 
-      const outputOptions = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-map', '0:v', '-map', '1:a', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-shortest']
+      const outputOptions = [
+        '-c:v', 'libx264',
+        '-preset', 'fast',
+        '-crf', '23',
+        '-map', '0:v',
+        '-map', '1:a',
+        '-c:a', 'aac',
+        '-ar', '48000',
+        '-ac', '2',
+        '-shortest',
+      ]
+
+      if (targetDurationSec > 0 && audioPath) {
+        outputOptions.push('-t', targetDurationSec.toFixed(3))
+      }
 
       cmd.outputOptions(outputOptions)
         .output(outputPath)
@@ -235,13 +406,21 @@ export async function composeStoryboard(storyboardId: number): Promise<string> {
     })
 
     const composedRelative = `static/composed/${outputFilename}`
-    db.update(schema.storyboards).set({ composedVideoUrl: composedRelative, status: 'compose_completed', updatedAt: now() })
-      .where(eq(schema.storyboards.id, storyboardId)).run()
+    db.update(schema.storyboards).set({
+      composedVideoUrl: composedRelative,
+      status: 'compose_completed',
+      duration: Math.round(targetDurationSec),
+      updatedAt: now(),
+    }).where(eq(schema.storyboards.id, storyboardId)).run()
 
     logTaskSuccess('ComposeTask', 'storyboard-compose', {
       storyboardId,
       storyboardNumber: sb.storyboardNumber,
       output: composedRelative,
+      videoDurationSec,
+      audioDurationMs,
+      videoSpeed: videoSpeed.toFixed(3),
+      targetDurationSec: targetDurationSec.toFixed(2),
     })
     return composedRelative
   } catch (err) {

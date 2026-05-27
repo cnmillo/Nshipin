@@ -359,6 +359,7 @@ ensureColumn('episodes', 'image_config_id', 'INTEGER')
 ensureColumn('episodes', 'video_config_id', 'INTEGER')
 ensureColumn('episodes', 'audio_config_id', 'INTEGER')
 ensureColumn('characters', 'gender', 'TEXT')
+ensureColumn('storyboards', 'tts_audio_duration', 'INTEGER')
 
 // 性能关键索引
 const indexes = [
